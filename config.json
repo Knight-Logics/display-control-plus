@@ -1,0 +1,30 @@
+{
+  "monitors": [
+    [
+      3440,
+      0,
+      6000,
+      1440
+    ],
+    [
+      -1920,
+      91,
+      0,
+      1171
+    ]
+  ],
+  "monitor_indices": [
+    1,
+    2
+  ],
+  "mode": "single",
+  "file_paths": [
+    "C:/Users/nknig/Downloads/Display-Control-Plus-inspect/Display Control+ Logo.png"
+  ],
+  "timeout": 0.1667,
+  "interval": 30,
+  "enabled": true,
+  "scope": "per-monitor",
+  "detection_mode": "input",
+  "setting_groups": []
+}

@@ -1,0 +1,6 @@
+- All branding is now 'Display Control+' everywhere (installer, .exe, shortcuts, tray, Task Manager)
+- The logo is used for all icons (installer, app, tray, shortcuts)
+- The tray app runs in the background and manages overlays/screensavers
+- A README and changelog are included for end users
+- A download page template is provided for your website
+- See tray_icon_example.py for using the icon in your Python tray code

@@ -1,0 +1,13 @@
+# How to create the .ico file for Display Control+
+
+1. Use the provided convert_logo_to_ico.ps1 script (requires ImageMagick's convert.exe on PATH):
+   - Open PowerShell in the installer directory.
+   - Run: ./convert_logo_to_ico.ps1
+   - This will create 'Display Control+ Logo.ico' in the project root.
+
+2. If you prefer a GUI tool, use an online PNG to ICO converter (e.g. icoconvert.com) and save as 'Display Control+ Logo.ico' in the project root.
+
+3. The .ico file is required for:
+   - PyInstaller build (app icon, Task Manager, tray icon)
+   - Inno Setup installer and shortcuts
+   - Tray icon in Python (see code)

@@ -1,0 +1,16 @@
+Display Control+ Changelog
+=========================
+
+v1.0.1 (2026-03-19)
+- Packaging cleanup release
+- Replaced bloated dependency list with focused runtime/build requirements
+- Standardized build output names to DisplayControl.exe and overlay_bg.exe
+- Improved build script and task setup reliability
+- Updated README with clear use case and feature-focused product positioning
+
+v1.0.0 (2025-07-23)
+- Initial professional release
+- Multi-monitor overlay and screensaver support
+- Modern tray UI with dark theme
+- Robust installer with branding and auto-launch
+- Logging and error handling

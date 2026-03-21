@@ -1,0 +1,8 @@
+# Tray/Background Process Pattern for Display Control+
+
+- Main process: tray app (shows icon, handles user interaction, launches overlays/screensavers as subprocesses)
+- Background: overlays/screensavers run as separate processes (multiprocessing or subprocess)
+- Use robust error handling and logging in both
+- On 'Quit' from tray, terminate all child/background processes cleanly
+- Use pystray for tray icon (see tray_icon_example.py)
+- Use the .ico for all branding
