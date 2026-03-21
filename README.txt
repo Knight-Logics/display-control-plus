@@ -56,5 +56,6 @@ Build Notes
 
 License
 -------
-Commercial use and redistribution prohibited without license.
-Copyright (c) 2025-2026 Display Control+.
+This project is distributed under a proprietary Knight Logics software license.
+See LICENSE.txt, TERMS_OF_USE.md, and PRIVACY_POLICY.md for full legal terms.
+Copyright (c) 2026 Knight Logics. All rights reserved.

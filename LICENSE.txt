@@ -1,0 +1,33 @@
+Knight Logics Software License (Display Control+) v1.0
+Copyright (c) 2026 Knight Logics. All rights reserved.
+
+1. Grant of License
+Knight Logics grants you a limited, non-exclusive, non-transferable, revocable license to install and use Display Control+ for personal or internal business use, subject to this License.
+
+2. Restrictions
+You may not:
+- sell, sublicense, rent, lease, or commercially redistribute the Software;
+- remove or alter copyright, trademark, or attribution notices;
+- reverse engineer, decompile, disassemble, or attempt to derive source code, except where prohibited by applicable law;
+- use the Software in violation of any law or regulation.
+
+3. Ownership
+The Software, including all related intellectual property rights, is and remains the property of Knight Logics.
+
+4. Updates
+Knight Logics may provide updates, patches, or new versions at its sole discretion. Updates may be subject to additional terms.
+
+5. Termination
+This License terminates automatically if you breach its terms. Upon termination, you must stop using the Software and remove all copies in your possession or control.
+
+6. Disclaimer of Warranties
+THE SOFTWARE IS PROVIDED "AS IS" AND "AS AVAILABLE," WITHOUT WARRANTIES OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, AND NON-INFRINGEMENT.
+
+7. Limitation of Liability
+TO THE MAXIMUM EXTENT PERMITTED BY LAW, KNIGHT LOGICS SHALL NOT BE LIABLE FOR ANY INDIRECT, INCIDENTAL, SPECIAL, CONSEQUENTIAL, OR EXEMPLARY DAMAGES, OR FOR LOSS OF DATA, REVENUE, OR PROFITS, ARISING FROM OR RELATED TO THE SOFTWARE.
+
+8. Governing Law
+This License is governed by applicable laws of the jurisdiction in which Knight Logics operates, without regard to conflict of law rules.
+
+9. Contact
+For licensing questions, contact Knight Logics via the official website.
