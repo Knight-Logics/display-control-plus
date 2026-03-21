@@ -1254,6 +1254,13 @@ def launch_gui():
     update_media_controls()
     refresh_upload_summary()
 
+    # Check for a newer GitHub release 2 s after the window is ready
+    try:
+        from updater import check_for_updates
+        win.after(2000, lambda: check_for_updates(win))
+    except Exception as e:
+        logging.debug(f"[updater] Could not schedule update check: {e}")
+
     win.protocol("WM_DELETE_WINDOW", on_close)
     try:
         win.mainloop()
