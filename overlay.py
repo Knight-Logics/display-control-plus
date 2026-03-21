@@ -858,6 +858,41 @@ def launch_gui():
     enabled_check = ttk.Checkbutton(right_card, text="Enable background protection", variable=enabled_var)
     enabled_check.grid(row=7, column=0, columnspan=2, sticky="w", pady=(4, 4))
 
+    help_card = ttk.Labelframe(right_card, text="How It Works", style="Card.TLabelframe", padding=(10, 8, 10, 6))
+    help_card.grid(row=8, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+    help_card.columnconfigure(1, weight=1)
+
+    _help_rows = [
+        ("Idle Timeout",      "How long a display must be inactive before protection kicks in."),
+        ("Overlay Mode",      "Blank turns the screen off; Image/Slideshow/Video shows media."),
+        ("Slideshow Interval","Time between each image when using Slideshow mode."),
+        ("Media Files",       "Required for Image, Slideshow, and Video modes."),
+        ("Detection Scope",   "System-wide: whole PC idle. Per-monitor: each screen tracked separately."),
+        ("Detection Mode",    "Input: keyboard/mouse. Activity: screen changes. Both: either trigger."),
+        ("Apply",             "Saves the current settings as a new named protection profile."),
+    ]
+    for _r, (_label, _desc) in enumerate(_help_rows):
+        tk.Label(
+            help_card,
+            text=_label,
+            bg="#161a22",
+            fg="#9fe1c8",
+            font=("Segoe UI", 9, "bold"),
+            anchor="w",
+            width=18,
+            justify="left"
+        ).grid(row=_r, column=0, sticky="nw", pady=(0, 3), padx=(0, 10))
+        tk.Label(
+            help_card,
+            text=_desc,
+            bg="#161a22",
+            fg="#9aa7b7",
+            font=("Segoe UI", 9),
+            anchor="w",
+            justify="left",
+            wraplength=320
+        ).grid(row=_r, column=1, sticky="nw", pady=(0, 3))
+
     settings_list_card = ttk.Labelframe(left_card, text="Applied Settings", style="Card.TLabelframe", padding=(10, 8, 10, 8))
     settings_list_card.grid(row=2, column=0, sticky="ew", pady=(10, 0))
     settings_list_card.columnconfigure(0, weight=1)
