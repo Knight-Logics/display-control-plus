@@ -1,9 +1,19 @@
 import logging
+import os
 import time
 import threading
 from pynput import mouse, keyboard
 
-logging.basicConfig(filename="overlay.log", level=logging.DEBUG, format="%(asctime)s %(levelname)s %(message)s")
+APPDATA_ROOT = os.environ.get("APPDATA", os.path.expanduser("~"))
+RUNTIME_DIR = os.path.join(APPDATA_ROOT, "KnightLogics", "DisplayControlPlus")
+os.makedirs(RUNTIME_DIR, exist_ok=True)
+LOG_PATH = os.path.join(RUNTIME_DIR, "overlay.log")
+
+try:
+    logging.basicConfig(filename=LOG_PATH, level=logging.DEBUG, format="%(asctime)s %(levelname)s %(message)s")
+except Exception:
+    # Keep the app functional even if file logging cannot be initialized.
+    logging.basicConfig(level=logging.DEBUG, format="%(asctime)s %(levelname)s %(message)s")
 
 class MonitorActivityDetector:
     def __init__(self, monitors, mode="input", scope="system", monitor_modes=None):

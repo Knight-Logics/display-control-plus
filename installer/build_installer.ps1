@@ -37,7 +37,7 @@ try {
 # Step 3: Build background executable
 Write-Host "[3/5] Building overlay_bg.exe..."
 try {
-    & $projectPython -m PyInstaller --noconfirm --clean --onefile --console --name "overlay_bg" --distpath "$ProjectRoot\dist" "$ProjectRoot\overlay_bg.py"
+    & $projectPython -m PyInstaller --noconfirm --clean --onefile --windowed --name "overlay_bg" --distpath "$ProjectRoot\dist" "$ProjectRoot\overlay_bg.py"
 } catch {
     Write-Error "overlay_bg build failed: $_"
     exit 1
