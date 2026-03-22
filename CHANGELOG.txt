@@ -1,6 +1,14 @@
 Display Control+ Changelog
 =========================
 
+v1.0.3 (2026-03-22)
+- Added tray left-click behavior to open the dashboard directly
+- Removed brief CMD flashes by launching scheduler/task/process commands with CREATE_NO_WINDOW
+- Improved dashboard taskbar icon reliability using a generated .ico for native Windows taskbar display
+- Implemented real Activity detection mode using per-monitor pixel-change sampling
+- Clarified detection mode labels and help text for Input, Activity, and Both modes
+- Published as a new version so in-app updater correctly prompts existing v1.0.2 installs
+
 v1.0.2 (2026-03-22)
 - Fixed frozen-launch recursion that could spawn repeated dashboard windows
 - Hardened GUI single-instance locking for renamed packaged executables

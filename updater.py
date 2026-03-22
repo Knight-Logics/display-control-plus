@@ -13,7 +13,7 @@ import tkinter as tk
 from tkinter import ttk
 
 # ── Version ──────────────────────────────────────────────────────────────────
-CURRENT_VERSION = "1.0.2"          # bump this string on every release
+CURRENT_VERSION = "1.0.3"          # bump this string on every release
 RELEASES_API    = "https://api.github.com/repos/Knight-Logics/display-control-plus/releases/latest"
 RELEASES_PAGE   = "https://github.com/Knight-Logics/display-control-plus/releases/latest"
 
