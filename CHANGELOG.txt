@@ -1,6 +1,12 @@
 Display Control+ Changelog
 =========================
 
+v1.0.4 (2026-03-22)
+- Updater dialog now stays above other windows (topmost + focused modal behavior)
+- Added in-app update download and installer launch (no browser redirect)
+- Added dashboard header version text under the Knight Logics brand/link
+- Published as a new updater target so v1.0.3 clients can auto-detect and upgrade
+
 v1.0.3 (2026-03-22)
 - Added tray left-click behavior to open the dashboard directly
 - Removed brief CMD flashes by launching scheduler/task/process commands with CREATE_NO_WINDOW

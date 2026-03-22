@@ -83,4 +83,4 @@ try {
 }
 
 # Output result
-Write-Host "Build complete! Installer is in $ProjectRoot\DisplayControlSetup_v1.0.3.exe"
+Write-Host "Build complete! Installer is in $ProjectRoot\DisplayControlSetup_v1.0.4.exe"

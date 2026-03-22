@@ -623,6 +623,11 @@ def launch_gui():
     set_gui_lock(True)
     _start_startup_registration()
 
+    try:
+        from updater import CURRENT_VERSION as APP_VERSION
+    except Exception:
+        APP_VERSION = "unknown"
+
     from monitor_control import get_monitors
 
     win = tk.Tk()
@@ -734,8 +739,11 @@ def launch_gui():
         style="Subhead.TLabel"
     ).pack(anchor="w", pady=(2, 8))
 
-    brand_top = tk.Frame(header_row, bg="#0f1115")
-    brand_top.pack(side=tk.RIGHT, anchor="ne", pady=(6, 0))
+    brand_block = tk.Frame(header_row, bg="#0f1115")
+    brand_block.pack(side=tk.RIGHT, anchor="ne", pady=(6, 0))
+
+    brand_top = tk.Frame(brand_block, bg="#0f1115")
+    brand_top.pack(side=tk.TOP, anchor="e")
 
     tk.Label(
         brand_top,
@@ -768,6 +776,14 @@ def launch_gui():
     )
     brand_top_link.pack(side=tk.LEFT)
     brand_top_link.bind("<Button-1>", lambda _e: webbrowser.open("https://knightlogics.com"))
+
+    tk.Label(
+        brand_block,
+        text=f"Version v{APP_VERSION}",
+        bg="#0f1115",
+        fg="#6f7f92",
+        font=("Segoe UI", 8)
+    ).pack(side=tk.TOP, anchor="e", pady=(2, 0))
 
     # Keep bottom alignment stable while moving the card region down slightly.
     content_spacer = tk.Frame(root_frame, height=10, bg="#0f1115")
