@@ -83,6 +83,7 @@ def _start_startup_registration():
             capture_output=True,
             text=True,
             check=False,
+            creationflags=subprocess.CREATE_NO_WINDOW,
         )
         access_denied = "Access is denied" in ((check.stderr or "") + (check.stdout or ""))
         if access_denied:
@@ -98,7 +99,7 @@ def _start_startup_registration():
             return
         script_path = os.path.join(app_base_dir(), "ensure_overlay_bg_task.py")
         if os.path.exists(script_path):
-            subprocess.Popen([sys.executable, script_path], cwd=app_base_dir())
+            subprocess.Popen([sys.executable, script_path], cwd=app_base_dir(), creationflags=subprocess.CREATE_NO_WINDOW)
     except Exception as e:
         logging.error(f"Failed to ensure background task from overlay.py: {e}")
 
@@ -400,7 +401,8 @@ def _get_process_image_name(pid):
             ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
             capture_output=True,
             text=True,
-            check=False
+            check=False,
+            creationflags=subprocess.CREATE_NO_WINDOW,
         )
         line = (result.stdout or "").strip()
         if not line or line.startswith("INFO:"):
@@ -457,9 +459,9 @@ def register_task_scheduler():
     task_name = "Display Control+"
     cmd = f'SchTasks /Create /F /TN "{task_name}" /TR "{exe} {script} --background" /SC ONLOGON /RL HIGHEST'
     try:
-        subprocess.run(cmd, shell=True, check=True)
+        subprocess.run(cmd, shell=True, check=True, creationflags=subprocess.CREATE_NO_WINDOW)
         run_cmd = f'SchTasks /Run /TN "{task_name}"'
-        subprocess.run(run_cmd, shell=True, check=True)
+        subprocess.run(run_cmd, shell=True, check=True, creationflags=subprocess.CREATE_NO_WINDOW)
     except Exception as e:
         logging.error(f"Task Scheduler registration or start failed: {e}")
 
@@ -467,7 +469,7 @@ def unregister_task_scheduler():
     task_name = "Display Control+"
     cmd = f'SchTasks /Delete /F /TN "{task_name}"'
     try:
-        subprocess.run(cmd, shell=True, check=True)
+        subprocess.run(cmd, shell=True, check=True, creationflags=subprocess.CREATE_NO_WINDOW)
     except Exception as e:
         logging.error(f"Task Scheduler unregister failed: {e}")
 
@@ -504,7 +506,11 @@ def run_background_overlay():
                 time.sleep(30)
                 continue
 
-            detector = MonitorActivityDetector(all_monitors, mode="both", scope="per-monitor")
+            # Use the most comprehensive detection mode required by any active group
+            # so the detector tracks whichever signal(s) the groups actually need.
+            _group_modes = {g.get("detection_mode", "input") for g in groups}
+            _detector_mode = "both" if ("both" in _group_modes or "activity" in _group_modes) else "input"
+            detector = MonitorActivityDetector(all_monitors, mode=_detector_mode, scope="per-monitor")
             detector.start()
 
             overlay_targets = {}
@@ -522,7 +528,14 @@ def run_background_overlay():
                     scope = group.get("scope", "system")
 
                     if scope == "system":
-                        if system_idle >= timeout_sec:
+                        detection_mode = group.get("detection_mode", "input")
+                        if detection_mode == "activity":
+                            effective_idle = idle_times.get("system", 0)
+                        elif detection_mode == "both":
+                            effective_idle = min(system_idle, idle_times.get("system", 0))
+                        else:
+                            effective_idle = system_idle
+                        if effective_idle >= timeout_sec:
                             for idx in indices:
                                 overlay_targets[idx] = group
                     else:
@@ -624,14 +637,24 @@ def launch_gui():
     header_logo = None
     brand_logo = None
     window_icon = None
+    _tmp_ico_path = None
 
     if os.path.exists(logo_path):
         try:
+            import tempfile
             with Image.open(logo_path) as base_logo:
                 icon_img = base_logo.copy().convert("RGBA")
                 icon_img.thumbnail((64, 64), Image.Resampling.LANCZOS)
                 window_icon = ImageTk.PhotoImage(icon_img)
                 win.iconphoto(True, window_icon)
+
+                # Write a temp .ico so the Windows taskbar shows the correct icon.
+                # iconphoto alone is not sufficient for the native Win32 taskbar button.
+                _ico_fd, _tmp_ico_path = tempfile.mkstemp(suffix=".ico")
+                os.close(_ico_fd)
+                ico_src = base_logo.copy().convert("RGBA")
+                ico_src.save(_tmp_ico_path, format="ICO", sizes=[(16, 16), (32, 32), (48, 48)])
+                win.iconbitmap(_tmp_ico_path)
 
                 header_img = base_logo.copy().convert("RGBA")
                 header_img.thumbnail((40, 40), Image.Resampling.LANCZOS)
@@ -924,9 +947,9 @@ def launch_gui():
     ttk.Label(right_card, text="Detection mode", style="Body.TLabel").grid(row=5, column=0, sticky="nw", pady=(2, 8), padx=(0, 10))
     detect_frame = tk.Frame(right_card, bg="#161a22")
     detect_frame.grid(row=5, column=1, sticky="w", pady=(2, 8))
-    ttk.Radiobutton(detect_frame, text="Input", variable=detection_mode_var, value="input", style="Dark.TRadiobutton").pack(side=tk.LEFT, padx=(0, 10))
-    ttk.Radiobutton(detect_frame, text="Activity", variable=detection_mode_var, value="activity", style="Dark.TRadiobutton").pack(side=tk.LEFT, padx=(0, 10))
-    ttk.Radiobutton(detect_frame, text="Both", variable=detection_mode_var, value="both", style="Dark.TRadiobutton").pack(side=tk.LEFT)
+    ttk.Radiobutton(detect_frame, text="Input (keyboard & mouse)", variable=detection_mode_var, value="input", style="Dark.TRadiobutton").pack(side=tk.LEFT, padx=(0, 10))
+    ttk.Radiobutton(detect_frame, text="Activity (media / screen)", variable=detection_mode_var, value="activity", style="Dark.TRadiobutton").pack(side=tk.LEFT, padx=(0, 10))
+    ttk.Radiobutton(detect_frame, text="Both (require all idle)", variable=detection_mode_var, value="both", style="Dark.TRadiobutton").pack(side=tk.LEFT)
 
     apply_row = ttk.Frame(right_card)
     apply_row.grid(row=6, column=0, columnspan=2, sticky="w", pady=(2, 6))
@@ -944,7 +967,7 @@ def launch_gui():
         ("Slideshow Interval","Time between each image when using Slideshow mode."),
         ("Media Files",       "Required for Image, Slideshow, and Video modes."),
         ("Detection Scope",   "System-wide: whole PC idle. Per-monitor: each screen tracked separately."),
-        ("Detection Mode",    "Input: keyboard/mouse. Activity: screen changes. Both: either trigger."),
+        ("Detection Mode",    "Input: activates when keyboard/mouse are idle. Activity: stays off while video/media is playing — screen pixel changes are detected, so pausing also resumes the idle timer. Both: only activates when both input AND screen are fully idle."),
         ("Apply",             "Saves the current settings as a new named protection profile."),
     ]
     for _r, (_label, _desc) in enumerate(_help_rows):
@@ -1258,7 +1281,7 @@ def launch_gui():
             f'/TR {tr_cmd} '
             '/SC ONLOGON'
         )
-        result = subprocess.run(create_cmd, shell=True, capture_output=True, text=True)
+        result = subprocess.run(create_cmd, shell=True, capture_output=True, text=True, creationflags=subprocess.CREATE_NO_WINDOW)
         if result.returncode != 0:
             msg = (result.stderr or "").strip()
             if "Access is denied" in msg:
@@ -1270,9 +1293,9 @@ def launch_gui():
         if not is_background_running():
             try:
                 if os.path.exists(bg_exe_path):
-                    subprocess.Popen([bg_exe_path], start_new_session=True)
+                    subprocess.Popen([bg_exe_path], start_new_session=True, creationflags=subprocess.CREATE_NO_WINDOW)
                 else:
-                    subprocess.Popen([os.path.join(os.path.dirname(sys.executable), "pythonw.exe"), bg_py_path], start_new_session=True)
+                    subprocess.Popen([os.path.join(os.path.dirname(sys.executable), "pythonw.exe"), bg_py_path], start_new_session=True, creationflags=subprocess.CREATE_NO_WINDOW)
                 logging.info("Background process spawned immediately.")
             except Exception as e:
                 logging.warning(f"Could not spawn background process immediately: {e}")
@@ -1338,6 +1361,11 @@ def launch_gui():
         win.mainloop()
     finally:
         set_gui_lock(False)
+        if _tmp_ico_path:
+            try:
+                os.remove(_tmp_ico_path)
+            except Exception:
+                pass
 
 # --- Entry Point ---
 if __name__ == "__main__":

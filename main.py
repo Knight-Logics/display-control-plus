@@ -21,7 +21,7 @@ if __name__ == "__main__" and "--background" not in sys.argv:
                 subprocess.Popen(
                     [pythonw] + sys.argv,
                     cwd=os.path.dirname(os.path.abspath(__file__)),
-                    creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
+                    creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW,
                 )
                 sys.exit(0)
 

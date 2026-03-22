@@ -37,6 +37,7 @@ def _set_run_key_startup(start_cmd):
         capture_output=True,
         text=True,
         check=False,
+        creationflags=subprocess.CREATE_NO_WINDOW,
     )
     logging.info(f"Run-key set result: rc={result.returncode} out={result.stdout} err={result.stderr}")
     return result.returncode == 0
@@ -74,7 +75,8 @@ def ensure_overlay_bg_task():
         ["SchTasks", "/Delete", "/F", "/TN", task_name],
         capture_output=True,
         text=True,
-        check=False
+        check=False,
+        creationflags=subprocess.CREATE_NO_WINDOW,
     )
     logging.info(f"Task delete result: rc={del_result.returncode} out={del_result.stdout} err={del_result.stderr}")
 
@@ -82,7 +84,8 @@ def ensure_overlay_bg_task():
         ["SchTasks", "/Create", "/F", "/TN", task_name, "/TR", tr_cmd, "/SC", "ONLOGON"],
         capture_output=True,
         text=True,
-        check=False
+        check=False,
+        creationflags=subprocess.CREATE_NO_WINDOW,
     )
     logging.info(f"Task create result: rc={create_result.returncode} out={create_result.stdout} err={create_result.stderr}")
     if create_result.returncode != 0:
@@ -99,7 +102,8 @@ def ensure_overlay_bg_task():
         ["SchTasks", "/Run", "/TN", task_name],
         capture_output=True,
         text=True,
-        check=False
+        check=False,
+        creationflags=subprocess.CREATE_NO_WINDOW,
     )
     logging.info(f"Task run result: rc={run_result.returncode} out={run_result.stdout} err={run_result.stderr}")
 
@@ -107,7 +111,8 @@ def ensure_overlay_bg_task():
         ["SchTasks", "/Query", "/TN", task_name],
         capture_output=True,
         text=True,
-        check=False
+        check=False,
+        creationflags=subprocess.CREATE_NO_WINDOW,
     )
     if verify_result.returncode == 0:
         print(f"Task '{task_name}' is configured and started for {tr_cmd}")

@@ -135,12 +135,12 @@ def start_background_if_needed():
     bg_py = _first_existing_path("overlay_bg.py")
     try:
         if bg_exe:
-            subprocess.Popen([bg_exe], start_new_session=True)
+            subprocess.Popen([bg_exe], start_new_session=True, creationflags=subprocess.CREATE_NO_WINDOW)
         elif bg_py:
             pythonw = os.path.join(os.path.dirname(sys.executable), "pythonw.exe")
             if not os.path.exists(pythonw):
                 pythonw = sys.executable
-            subprocess.Popen([pythonw, bg_py], start_new_session=True)
+            subprocess.Popen([pythonw, bg_py], start_new_session=True, creationflags=subprocess.CREATE_NO_WINDOW)
     except Exception as e:
         logging.error(f"Failed to start background process from tray: {e}")
 
@@ -153,7 +153,7 @@ def stop_background():
             pid_str = f.read().strip()
         if pid_str.isdigit():
             pid = int(pid_str)
-            subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], check=False, capture_output=True, text=True)
+            subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], check=False, capture_output=True, text=True, creationflags=subprocess.CREATE_NO_WINDOW)
     except Exception as e:
         logging.error(f"Failed to stop background process from tray: {e}")
     try:
@@ -185,7 +185,7 @@ def open_dashboard():
     ]
     for candidate in app_exe_candidates:
         if candidate and os.path.exists(candidate):
-            subprocess.Popen([candidate], start_new_session=True)
+            subprocess.Popen([candidate], start_new_session=True, creationflags=subprocess.CREATE_NO_WINDOW)
             return
 
     pythonw = os.path.join(os.path.dirname(sys.executable), "pythonw.exe")
@@ -193,7 +193,7 @@ def open_dashboard():
         pythonw = sys.executable
     main_py = _first_existing_path("main.py")
     if main_py:
-        subprocess.Popen([pythonw, main_py], start_new_session=True)
+        subprocess.Popen([pythonw, main_py], start_new_session=True, creationflags=subprocess.CREATE_NO_WINDOW)
 
 
 def _on_open(_icon, _item):
@@ -270,6 +270,7 @@ def run_tray():
     )
 
     icon = pystray.Icon("display_control_plus", image, "Display Control+", menu)
+    icon.on_activate = _on_open  # Left-click opens dashboard
     threading.Thread(target=keep_background_alive, daemon=True).start()
     icon.run()
 
