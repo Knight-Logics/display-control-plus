@@ -15,7 +15,7 @@ import threading
 import tkinter as tk
 
 # ── Version ──────────────────────────────────────────────────────────────────
-CURRENT_VERSION = "1.0.4"          # bump this string on every release
+CURRENT_VERSION = "1.0.5"          # bump this string on every release
 RELEASES_API    = "https://api.github.com/repos/Knight-Logics/display-control-plus/releases/latest"
 RELEASES_PAGE   = "https://github.com/Knight-Logics/display-control-plus/releases/latest"
 APPDATA_ROOT    = os.environ.get("APPDATA", os.path.expanduser("~"))
@@ -147,7 +147,10 @@ def _show_update_dialog(parent: tk.Tk, latest_tag: str, asset_url: str | None, a
 
     def _launch_installer(path: str):
         flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-        subprocess.Popen([path], creationflags=flags)
+        subprocess.Popen(
+            [path, "/SILENT", "/NORESTART", "/CLOSEAPPLICATIONS"],
+            creationflags=flags
+        )
 
     def download_and_install():
         if in_progress["value"]:
@@ -165,10 +168,15 @@ def _show_update_dialog(parent: tk.Tk, latest_tag: str, asset_url: str | None, a
         def _worker():
             try:
                 installer_path = _download_installer(resolved_url, resolved_name, status_cb=_set_status)
-                _set_status("Update downloaded. Launching installer...")
+                _set_status("Installing update — app will reopen automatically...")
                 dlg.after(0, lambda: _launch_installer(installer_path))
-                # Close the dashboard shortly after launching installer so files can be updated.
-                dlg.after(400, parent.destroy)
+                # Close dashboard after launching installer so the installer can replace files.
+                def _safe_destroy():
+                    try:
+                        parent.destroy()
+                    except Exception:
+                        pass
+                dlg.after(800, _safe_destroy)
             except Exception as e:
                 logging.debug(f"[updater] Download/install failed: {e}")
                 _set_status(f"Update failed: {e}")

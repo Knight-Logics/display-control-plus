@@ -3,15 +3,16 @@
 
 [Setup]
 AppName=Display Control
-AppVersion=1.0.4
+AppVersion=1.0.5
 DefaultDirName={commonpf64}\Display Control
 DefaultGroupName=Display Control
 UninstallDisplayIcon={app}\DisplayControl.exe
 OutputDir=..
-OutputBaseFilename=DisplayControlSetup_v1.0.4
+OutputBaseFilename=DisplayControlSetup_v1.0.5
 Compression=lzma
 SolidCompression=yes
 ArchitecturesInstallIn64BitMode=x64compatible
+CloseApplications=yes
 
 [Files]
 Source: "..\dist\DisplayControl.exe"; DestDir: "{app}"; Flags: ignoreversion
@@ -35,8 +36,15 @@ Filename: "cmd.exe"; \
   StatusMsg: "Registering startup task..."; \
   Flags: runhidden; Check: WizardIsTaskSelected('trayicon')
 
-; Start tray immediately after install
+; Start tray immediately after install (manual/wizard installs)
 Filename: "{app}\tray.exe"; Description: "Start Display Control+ tray"; Flags: nowait postinstall skipifsilent
 
-; Optional: open dashboard after install
+; Optional: open dashboard after install (manual/wizard installs)
 Filename: "{app}\DisplayControl.exe"; Description: "Open Display Control+ dashboard"; Flags: nowait postinstall skipifsilent unchecked
+
+; Silent update: re-register startup task, relaunch tray, then reopen dashboard
+Filename: "cmd.exe"; \
+  Parameters: "/C schtasks /Create /F /TN DisplayControlBackground /TR ""\""{app}\tray.exe\"""" /SC ONLOGON"; \
+  Flags: runhidden; Check: WizardSilent()
+Filename: "{app}\tray.exe"; Flags: nowait; Check: WizardSilent()
+Filename: "{app}\DisplayControl.exe"; Flags: nowait; Check: WizardSilent()

@@ -1,6 +1,11 @@
 Display Control+ Changelog
 =========================
 
+v1.0.5 (2026-03-22)
+- Update now installs silently (no wizard shown) — app closes, updates, and reopens automatically
+- Tray and dashboard relaunch after a silent update without user interaction
+- App process gracefully closed before installer replaces files (CloseApplications)
+
 v1.0.4 (2026-03-22)
 - Updater dialog now stays above other windows (topmost + focused modal behavior)
 - Added in-app update download and installer launch (no browser redirect)
