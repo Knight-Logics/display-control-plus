@@ -8,6 +8,27 @@ RUNTIME_DIR = os.path.join(APPDATA_ROOT, "KnightLogics", "DisplayControlPlus")
 os.makedirs(RUNTIME_DIR, exist_ok=True)
 
 
+def app_base_dir():
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(sys.executable)
+    return os.path.abspath(os.path.dirname(__file__))
+
+
+def _runtime_candidates(*parts):
+    base = app_base_dir()
+    candidates = [os.path.join(base, *parts)]
+    if parts and parts[0] != "dist":
+        candidates.append(os.path.join(base, "dist", *parts))
+    return candidates
+
+
+def _first_existing_path(*parts):
+    for candidate in _runtime_candidates(*parts):
+        if os.path.exists(candidate):
+            return candidate
+    return ""
+
+
 def _set_run_key_startup(start_cmd):
     value_name = "DisplayControlPlusTray"
     reg_path = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run"
@@ -22,14 +43,14 @@ def _set_run_key_startup(start_cmd):
 
 def ensure_overlay_bg_task():
     # Prefer tray app at startup; tray keeps background alive and provides controls.
-    base = os.path.abspath(os.path.dirname(__file__))
-    tray_exe_path = os.path.join(base, "dist", "tray.exe")
-    bg_exe_path = os.path.join(base, "dist", "overlay_bg.exe")
+    base = app_base_dir()
+    tray_exe_path = _first_existing_path("tray.exe")
+    bg_exe_path = _first_existing_path("overlay_bg.exe")
 
-    if os.path.exists(tray_exe_path):
+    if tray_exe_path:
         tr_cmd = f'"{tray_exe_path}"'
         logging.info(f"[TASK] Using TRAY EXE for /TR: {tr_cmd}")
-    elif os.path.exists(bg_exe_path):
+    elif bg_exe_path:
         tr_cmd = f'"{bg_exe_path}"'
         logging.info(f"[TASK] Using BG EXE fallback for /TR: {tr_cmd}")
     else:

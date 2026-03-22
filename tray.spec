@@ -2,7 +2,7 @@
 
 
 a = Analysis(
-    ['tray.py'],
+    ['C:\\Users\\nknig\\Downloads\\Display-Control-Plus-inspect\\installer\\..\\tray.py'],
     pathex=[],
     binaries=[],
     datas=[],

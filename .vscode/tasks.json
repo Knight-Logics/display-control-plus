@@ -4,7 +4,7 @@
 		{
 			"type": "shell",
 			"label": "Run Display Control+ GUI",
-			"command": "python main.py",
+			"command": "${workspaceFolder}\\venv\\Scripts\\python.exe main.py",
 			"group": "test",
 			"problemMatcher": [
 				"$python"
@@ -13,7 +13,7 @@
 		{
 			"type": "shell",
 			"label": "Run Display Control+ Background",
-			"command": "python overlay_bg.py",
+			"command": "${workspaceFolder}\\venv\\Scripts\\python.exe overlay_bg.py",
 			"group": "test",
 			"problemMatcher": [
 				"$python"

@@ -13,7 +13,7 @@ import tkinter as tk
 from tkinter import ttk
 
 # ── Version ──────────────────────────────────────────────────────────────────
-CURRENT_VERSION = "1.0.0"          # bump this string on every release
+CURRENT_VERSION = "1.0.2"          # bump this string on every release
 RELEASES_API    = "https://api.github.com/repos/Knight-Logics/display-control-plus/releases/latest"
 RELEASES_PAGE   = "https://github.com/Knight-Logics/display-control-plus/releases/latest"
 
@@ -56,8 +56,6 @@ def _show_update_dialog(parent: tk.Tk, latest_tag: str):
     w, h = 400, 180
     dlg.geometry(f"{w}x{h}+{px + (pw - w)//2}+{py + (ph - h)//2}")
 
-    pad = dict(padx=22, pady=0)
-
     tk.Label(
         dlg,
         text="Update Available",
@@ -71,7 +69,7 @@ def _show_update_dialog(parent: tk.Tk, latest_tag: str):
         bg="#0f1115", fg="#9aa7b7",
         font=("Segoe UI", 10),
         wraplength=356, justify="left"
-    ).pack(anchor="w", **pad)
+    ).pack(anchor="w", padx=22, pady=0)
 
     tk.Label(
         dlg,

@@ -2,7 +2,7 @@
 
 
 a = Analysis(
-    ['overlay_bg.py'],
+    ['C:\\Users\\nknig\\Downloads\\Display-Control-Plus-inspect\\installer\\..\\overlay_bg.py'],
     pathex=[],
     binaries=[],
     datas=[],

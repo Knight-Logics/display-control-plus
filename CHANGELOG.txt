@@ -1,6 +1,15 @@
 Display Control+ Changelog
 =========================
 
+v1.0.2 (2026-03-22)
+- Fixed frozen-launch recursion that could spawn repeated dashboard windows
+- Hardened GUI single-instance locking for renamed packaged executables
+- Fixed tray/runtime executable lookup for portable releases outside the source tree
+- Added Windows multiprocessing freeze support to overlay_bg.exe startup
+- Kept tray-first startup behavior as the recommended release workflow
+- Fixed NameError crash in tray icon loader (BASE_DIR reference removed)
+- Exit Completely now kills the full overlay process tree, preventing orphaned overlay windows
+
 v1.0.1 (2026-03-19)
 - Packaging cleanup release
 - Replaced bloated dependency list with focused runtime/build requirements

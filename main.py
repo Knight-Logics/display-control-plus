@@ -33,17 +33,6 @@ def main():
     if "--background" in sys.argv:
         run_background_overlay()
     else:
-        # Ensure background task exists and is running
-        try:
-            base = os.path.abspath(os.path.dirname(__file__))
-            script_path = os.path.join(base, "ensure_overlay_bg_task.py")
-            task_name = "DisplayControlBackground"
-            check = subprocess.run(f'SchTasks /Query /TN "{task_name}"', shell=True, capture_output=True, text=True)
-            access_denied = "Access is denied" in ((check.stderr or "") + (check.stdout or ""))
-            if not access_denied:
-                subprocess.Popen([sys.executable, script_path])
-        except Exception as e:
-            logging.error(f"Failed to ensure background task from main.py: {e}")
         launch_gui()
 
 if __name__ == "__main__":

@@ -10,3 +10,5 @@ overlay_bg.lock
 *.spec.bak
 *.tmp
 *.log
+DisplayControlSetup_*.exe
+release_notes_*.md

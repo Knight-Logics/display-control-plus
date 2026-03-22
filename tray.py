@@ -18,12 +18,71 @@ APPDATA_ROOT = os.environ.get("APPDATA", os.path.expanduser("~"))
 RUNTIME_DIR = os.path.join(APPDATA_ROOT, "KnightLogics", "DisplayControlPlus")
 os.makedirs(RUNTIME_DIR, exist_ok=True)
 
-BASE_DIR = os.path.abspath(os.path.dirname(__file__))
 LOG_PATH = os.path.join(RUNTIME_DIR, "overlay.log")
 CONFIG_PATH = os.path.join(RUNTIME_DIR, "config.json")
 BG_LOCK_PATH = os.path.join(RUNTIME_DIR, "overlay_bg.lock")
+GUI_LOCK_PATH = os.path.join(RUNTIME_DIR, "display_control_gui.lock")
 
 logging.basicConfig(filename=LOG_PATH, level=logging.DEBUG, format="%(asctime)s %(levelname)s %(message)s")
+
+
+def app_base_dir():
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(sys.executable)
+    return os.path.abspath(os.path.dirname(__file__))
+
+
+def _runtime_candidates(*parts):
+    base = app_base_dir()
+    candidates = [os.path.join(base, *parts)]
+    if parts and parts[0] != "dist":
+        candidates.append(os.path.join(base, "dist", *parts))
+    return candidates
+
+
+def _first_existing_path(*parts):
+    for candidate in _runtime_candidates(*parts):
+        if os.path.exists(candidate):
+            return candidate
+    return ""
+
+
+def _load_lock_pid(lock_path):
+    try:
+        with open(lock_path, "r", encoding="utf-8") as lock_file:
+            raw = lock_file.read().strip()
+        if not raw:
+            return None
+        if raw.isdigit():
+            return int(raw)
+        payload = json.loads(raw)
+        pid = payload.get("pid")
+        if isinstance(pid, str) and pid.isdigit():
+            return int(pid)
+        if isinstance(pid, int):
+            return pid
+    except Exception:
+        return None
+    return None
+
+
+def is_dashboard_running():
+    if not os.path.exists(GUI_LOCK_PATH):
+        return False
+    pid = _load_lock_pid(GUI_LOCK_PATH)
+    if pid is None:
+        try:
+            os.remove(GUI_LOCK_PATH)
+        except Exception:
+            pass
+        return False
+    if _is_pid_alive(pid):
+        return True
+    try:
+        os.remove(GUI_LOCK_PATH)
+    except Exception:
+        pass
+    return False
 
 
 def _is_pid_alive(pid):
@@ -72,12 +131,12 @@ def is_background_running():
 def start_background_if_needed():
     if is_background_running():
         return
-    bg_exe = os.path.join(BASE_DIR, "dist", "overlay_bg.exe")
-    bg_py = os.path.join(BASE_DIR, "overlay_bg.py")
+    bg_exe = _first_existing_path("overlay_bg.exe")
+    bg_py = _first_existing_path("overlay_bg.py")
     try:
-        if os.path.exists(bg_exe):
+        if bg_exe:
             subprocess.Popen([bg_exe], start_new_session=True)
-        elif os.path.exists(bg_py):
+        elif bg_py:
             pythonw = os.path.join(os.path.dirname(sys.executable), "pythonw.exe")
             if not os.path.exists(pythonw):
                 pythonw = sys.executable
@@ -94,7 +153,7 @@ def stop_background():
             pid_str = f.read().strip()
         if pid_str.isdigit():
             pid = int(pid_str)
-            subprocess.run(["taskkill", "/PID", str(pid), "/F"], check=False, capture_output=True, text=True)
+            subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], check=False, capture_output=True, text=True)
     except Exception as e:
         logging.error(f"Failed to stop background process from tray: {e}")
     try:
@@ -116,19 +175,25 @@ def is_paused():
 
 
 def open_dashboard():
+    if is_dashboard_running():
+        logging.info("Dashboard is already running; tray open request ignored.")
+        return
+
     app_exe_candidates = [
-        os.path.join(BASE_DIR, "dist", "DisplayControl.exe"),
-        os.path.join(BASE_DIR, "dist", "main.exe")
+        _first_existing_path("DisplayControl.exe"),
+        _first_existing_path("main.exe"),
     ]
     for candidate in app_exe_candidates:
-        if os.path.exists(candidate):
+        if candidate and os.path.exists(candidate):
             subprocess.Popen([candidate], start_new_session=True)
             return
 
     pythonw = os.path.join(os.path.dirname(sys.executable), "pythonw.exe")
     if not os.path.exists(pythonw):
         pythonw = sys.executable
-    subprocess.Popen([pythonw, os.path.join(BASE_DIR, "main.py")], start_new_session=True)
+    main_py = _first_existing_path("main.py")
+    if main_py:
+        subprocess.Popen([pythonw, main_py], start_new_session=True)
 
 
 def _on_open(_icon, _item):
@@ -163,8 +228,8 @@ def _status_label(_item):
 
 
 def _build_icon_image():
-    primary_logo = os.path.join(BASE_DIR, "Display Control+ Logo.png")
-    fallback_logo = os.path.join(BASE_DIR, "KnightLogicsLogo.png")
+    primary_logo = _first_existing_path("Display Control+ Logo.png")
+    fallback_logo = _first_existing_path("KnightLogicsLogo.png")
     chosen = primary_logo if os.path.exists(primary_logo) else fallback_logo
 
     if os.path.exists(chosen):

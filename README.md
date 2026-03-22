@@ -5,7 +5,7 @@ Windows utility for multi-monitor burn-in protection with tray controls, idle de
 ## Download
 
 - Latest release: https://github.com/Knight-Logics/display-control-plus/releases/latest
-- Direct v1.0.0 page: https://github.com/Knight-Logics/display-control-plus/releases/tag/v1.0.0
+- Portable release binaries should stay together in the same folder after download
 
 ## What Users Should Run
 
@@ -22,6 +22,8 @@ Optional executables:
 2. Double-click `tray.exe`.
 3. Right-click tray icon and choose **Open Dashboard**.
 4. Select displays, choose timeout/mode, and click **Apply**.
+
+`DisplayControl.exe` is intended for direct dashboard access, but the tray-first path is the recommended release workflow.
 
 ## Features
 

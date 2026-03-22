@@ -2,7 +2,7 @@
 
 
 a = Analysis(
-    ['main.py'],
+    ['C:\\Users\\nknig\\Downloads\\Display-Control-Plus-inspect\\installer\\..\\main.py'],
     pathex=[],
     binaries=[],
     datas=[],

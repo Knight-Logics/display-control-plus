@@ -3,15 +3,15 @@
 
 [Setup]
 AppName=Display Control
-AppVersion=1.0
-DefaultDirName={pf64}\Display Control
+AppVersion=1.0.2
+DefaultDirName={commonpf64}\Display Control
 DefaultGroupName=Display Control
 UninstallDisplayIcon={app}\DisplayControl.exe
 OutputDir=..
-OutputBaseFilename=DisplayControlSetup
+OutputBaseFilename=DisplayControlSetup_v1.0.2
 Compression=lzma
 SolidCompression=yes
-ArchitecturesInstallIn64BitMode=x64
+ArchitecturesInstallIn64BitMode=x64compatible
 
 [Files]
 Source: "..\dist\DisplayControl.exe"; DestDir: "{app}"; Flags: ignoreversion
@@ -33,7 +33,7 @@ Name: "trayicon"; Description: "Start in &Task Tray on login"; GroupDescription:
 Filename: "cmd.exe"; \
   Parameters: "/C schtasks /Create /F /TN DisplayControlBackground /TR ""\""{app}\tray.exe\"""" /SC ONLOGON"; \
   StatusMsg: "Registering startup task..."; \
-  Flags: runhidden; Check: IsTaskSelected('trayicon')
+  Flags: runhidden; Check: WizardIsTaskSelected('trayicon')
 
 ; Start tray immediately after install
 Filename: "{app}\tray.exe"; Description: "Start Display Control+ tray"; Flags: nowait postinstall skipifsilent

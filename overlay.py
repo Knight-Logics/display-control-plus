@@ -7,6 +7,7 @@ import multiprocessing
 import os
 import sys
 import ctypes
+import threading
 import time
 import webbrowser
 from PIL import Image, ImageTk
@@ -18,6 +19,88 @@ os.makedirs(RUNTIME_DIR, exist_ok=True)
 
 def runtime_path(name):
     return os.path.join(RUNTIME_DIR, name)
+
+
+def app_base_dir():
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(sys.executable)
+    return os.path.abspath(os.path.dirname(__file__))
+
+
+def _runtime_candidates(*parts):
+    base = app_base_dir()
+    candidates = [os.path.join(base, *parts)]
+    if parts and parts[0] != "dist":
+        candidates.append(os.path.join(base, "dist", *parts))
+    return candidates
+
+
+def _first_existing_path(*parts):
+    for candidate in _runtime_candidates(*parts):
+        if os.path.exists(candidate):
+            return candidate
+    return _runtime_candidates(*parts)[0]
+
+
+def _current_process_names():
+    names = {
+        os.path.basename(sys.executable).lower(),
+        "python.exe",
+        "pythonw.exe",
+        "displaycontrol.exe",
+        "displaycontrol+.exe",
+        "displaycontrolplus.exe",
+        "main.exe",
+    }
+    return {name for name in names if name}
+
+
+def _load_lock_payload(lock_path):
+    with open(lock_path, "r") as lock_file:
+        raw = lock_file.read().strip()
+    if not raw:
+        return None, ""
+    if raw.isdigit():
+        return int(raw), ""
+    try:
+        payload = json.loads(raw)
+    except Exception:
+        return None, ""
+    pid = payload.get("pid")
+    if isinstance(pid, str) and pid.isdigit():
+        pid = int(pid)
+    if not isinstance(pid, int):
+        return None, ""
+    process_name = str(payload.get("process_name", "")).strip().lower()
+    return pid, process_name
+
+
+def _start_startup_registration():
+    try:
+        task_name = "DisplayControlBackground"
+        check = subprocess.run(
+            ["SchTasks", "/Query", "/TN", task_name],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        access_denied = "Access is denied" in ((check.stderr or "") + (check.stdout or ""))
+        if access_denied:
+            return
+        if getattr(sys, "frozen", False):
+            from ensure_overlay_bg_task import ensure_overlay_bg_task
+
+            threading.Thread(
+                target=ensure_overlay_bg_task,
+                daemon=True,
+                name="display-control-startup-registration",
+            ).start()
+            return
+        script_path = os.path.join(app_base_dir(), "ensure_overlay_bg_task.py")
+        if os.path.exists(script_path):
+            subprocess.Popen([sys.executable, script_path], cwd=app_base_dir())
+    except Exception as e:
+        logging.error(f"Failed to ensure background task from overlay.py: {e}")
 
 # --- Logging Setup ---
 logging.basicConfig(filename=runtime_path("overlay.log"), level=logging.DEBUG, format="%(asctime)s %(levelname)s %(message)s")
@@ -333,15 +416,15 @@ def is_gui_running():
     if not os.path.exists(lock_path):
         return False
     try:
-        with open(lock_path, "r") as f:
-            pid_str = f.read().strip()
-        if not pid_str.isdigit():
+        pid, locked_process_name = _load_lock_payload(lock_path)
+        if pid is None:
             os.remove(lock_path)
             return False
-        pid = int(pid_str)
         process_name = _get_process_image_name(pid)
-        valid_names = {"python.exe", "pythonw.exe", "displaycontrol.exe"}
-        if _is_pid_alive(pid) and process_name in valid_names:
+        valid_names = _current_process_names()
+        if locked_process_name:
+            valid_names.add(locked_process_name)
+        if _is_pid_alive(pid) and (not process_name or process_name in valid_names):
             return True
         os.remove(lock_path)
         return False
@@ -355,8 +438,12 @@ def is_gui_running():
 def set_gui_lock(state):
     lock_path = runtime_path("display_control_gui.lock")
     if state:
+        payload = {
+            "pid": os.getpid(),
+            "process_name": os.path.basename(sys.executable).lower(),
+        }
         with open(lock_path, "w") as f:
-            f.write(str(os.getpid()))
+            json.dump(payload, f)
     else:
         try:
             os.remove(lock_path)
@@ -517,22 +604,11 @@ def show_monitor_indicator(geometry, monitor_num):
     root.mainloop()
 
 def launch_gui():
-    # Ensure background task exists and is running (for direct overlay.py launches)
-    try:
-        base = os.path.abspath(os.path.dirname(__file__))
-        script_path = os.path.join(base, "ensure_overlay_bg_task.py")
-        task_name = "DisplayControlBackground"
-        check = subprocess.run(f'SchTasks /Query /TN "{task_name}"', shell=True, capture_output=True, text=True)
-        access_denied = "Access is denied" in ((check.stderr or "") + (check.stdout or ""))
-        if not access_denied:
-            subprocess.Popen([sys.executable, script_path])
-    except Exception as e:
-        logging.error(f"Failed to ensure background task from overlay.py: {e}")
-
     if is_gui_running():
         ctypes.windll.user32.MessageBoxW(0, "Display Control+ is already open.", "Display Control+", 0x40)
         return
     set_gui_lock(True)
+    _start_startup_registration()
 
     from monitor_control import get_monitors
 
@@ -542,9 +618,9 @@ def launch_gui():
     win.minsize(980, 700)
     win.configure(bg="#0f1115")
 
-    app_dir = os.path.abspath(os.path.dirname(__file__))
-    logo_path = os.path.join(app_dir, "Display Control+ Logo.png")
-    brand_logo_path = os.path.join(app_dir, "KnightLogicsLogo.png")
+    app_dir = app_base_dir()
+    logo_path = _first_existing_path("Display Control+ Logo.png")
+    brand_logo_path = _first_existing_path("KnightLogicsLogo.png")
     header_logo = None
     brand_logo = None
     window_icon = None
@@ -1168,12 +1244,8 @@ def launch_gui():
         )
         logging.info("Settings applied from GUI.")
 
-        base = os.path.abspath(os.path.dirname(__file__))
-        bg_exe_path = os.path.join(base, "dist", "overlay_bg.exe")
-        bg_py_path = os.path.join(base, "overlay_bg.py")
-        if not bg_exe_path or not bg_py_path:
-            bg_exe_path = os.path.join(base, "dist", "overlay_bg.exe")
-            bg_py_path = os.path.join(base, "overlay_bg.py")
+        bg_exe_path = _first_existing_path("overlay_bg.exe")
+        bg_py_path = _first_existing_path("overlay_bg.py")
         if os.path.exists(bg_exe_path):
             tr_cmd = f'"{bg_exe_path}"'
         else:
