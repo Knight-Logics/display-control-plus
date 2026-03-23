@@ -630,6 +630,12 @@ def launch_gui():
 
     from monitor_control import get_monitors
 
+    # Set an explicit AppUserModelID so Windows groups the app consistently on the taskbar.
+    try:
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("KnightLogics.DisplayControlPlus")
+    except Exception:
+        pass
+
     win = tk.Tk()
     win.title("Display Control+")
     win.geometry("1120x780")
@@ -645,25 +651,32 @@ def launch_gui():
     window_icon = None
     _tmp_ico_path = None
 
+    try:
+        if os.path.exists(logo_ico_path):
+            # Use packaged ICO for native Windows taskbar/process icons.
+            win.iconbitmap(default=logo_ico_path)
+            with Image.open(logo_ico_path) as ico_logo:
+                icon_img = ico_logo.copy().convert("RGBA")
+                icon_img.thumbnail((128, 128), Image.Resampling.LANCZOS)
+                window_icon = ImageTk.PhotoImage(icon_img)
+                win.iconphoto(True, window_icon)
+        elif os.path.exists(logo_path):
+            with Image.open(logo_path) as base_logo:
+                icon_img = base_logo.copy().convert("RGBA")
+                icon_img.thumbnail((128, 128), Image.Resampling.LANCZOS)
+                window_icon = ImageTk.PhotoImage(icon_img)
+                win.iconphoto(True, window_icon)
+    except Exception as e:
+        logging.warning(f"Could not load app icon: {e}")
+
     if os.path.exists(logo_path):
         try:
             with Image.open(logo_path) as base_logo:
-                icon_img = base_logo.copy().convert("RGBA")
-                icon_img.thumbnail((64, 64), Image.Resampling.LANCZOS)
-                window_icon = ImageTk.PhotoImage(icon_img)
-                win.iconphoto(True, window_icon)
-
-                # Prefer the packaged ICO so desktop/taskbar/app icons stay consistent and crisp.
-                if os.path.exists(logo_ico_path):
-                    win.iconbitmap(logo_ico_path)
-                else:
-                    win.iconphoto(True, window_icon)
-
                 header_img = base_logo.copy().convert("RGBA")
                 header_img.thumbnail((40, 40), Image.Resampling.LANCZOS)
                 header_logo = ImageTk.PhotoImage(header_img)
         except Exception as e:
-            logging.warning(f"Could not load app logo: {e}")
+            logging.warning(f"Could not load header logo: {e}")
 
     if os.path.exists(brand_logo_path):
         try:

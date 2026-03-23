@@ -3,12 +3,12 @@
 
 [Setup]
 AppName=Display Control
-AppVersion=1.0.9
+AppVersion=1.0.10
 DefaultDirName={commonpf64}\Display Control
 DefaultGroupName=Display Control
 UninstallDisplayIcon={app}\DisplayControl.exe
 OutputDir=..
-OutputBaseFilename=DisplayControlSetup_v1.0.9
+OutputBaseFilename=DisplayControlSetup_v1.0.10
 SetupIconFile=..\Display Control+ Logo.ico
 Compression=lzma
 SolidCompression=yes
@@ -27,6 +27,11 @@ Source: "..\KnightLogicsLogo.png"; DestDir: "{app}"; Flags: ignoreversion skipif
 Name: "{commondesktop}\Display Control+"; Filename: "{app}\DisplayControl.exe"; IconFilename: "{app}\Display Control+ Logo.ico"
 Name: "{group}\Display Control+"; Filename: "{app}\DisplayControl.exe"; IconFilename: "{app}\Display Control+ Logo.ico"
 
+[InstallDelete]
+Type: files; Name: "{commondesktop}\Display Control.lnk"
+Type: files; Name: "{userdesktop}\Display Control.lnk"
+Type: files; Name: "{group}\Display Control.lnk"
+
 [Tasks]
 Name: "trayicon"; Description: "Start in &Task Tray on login"; GroupDescription: "Startup options:"; Flags: checkedonce
 
@@ -42,6 +47,9 @@ Filename: "{app}\tray.exe"; Description: "Start Display Control+ tray"; Flags: n
 
 ; Optional: open dashboard after install (manual/wizard installs)
 Filename: "{app}\DisplayControl.exe"; Description: "Open Display Control+ dashboard"; Flags: nowait postinstall skipifsilent unchecked
+
+; Refresh Windows icon cache so updated shortcut/icon branding is reflected quickly.
+Filename: "{sys}\ie4uinit.exe"; Parameters: "-show"; Flags: runhidden
 
 ; Silent update: re-register startup task, relaunch tray, then reopen dashboard
 Filename: "cmd.exe"; \
