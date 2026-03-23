@@ -15,11 +15,26 @@ if (-not (Test-Path $projectPython)) {
     exit 1
 }
 
+# Step 0: Generate/refresh the .ico from the PNG
+$icoPath = "$ProjectRoot\Display Control+ Logo.ico"
+$pngPath = "$ProjectRoot\Display Control+ Logo.png"
+Write-Host "[0/5] Generating ICO from PNG..."
+& $projectPython -c "
+from PIL import Image
+img = Image.open(r'$pngPath').convert('RGBA')
+sizes = [(16,16),(24,24),(32,32),(48,48),(64,64),(128,128),(256,256)]
+resized = [img.resize(s, Image.LANCZOS) for s in sizes]
+resized[0].save(r'$icoPath', format='ICO', sizes=sizes, append_images=resized[1:])
+print('ICO ready')
+"
+
+$iconArg = "--icon=$icoPath"
+
 # Step 1: Build GUI executable
-Write-Host "[1/4] Building DisplayControl.exe..."
+Write-Host "[1/5] Building DisplayControl.exe..."
 Push-Location $ProjectRoot
 try {
-    & $projectPython -m PyInstaller --noconfirm --clean --onefile --windowed --name "DisplayControl" --distpath "$ProjectRoot\dist" "$ProjectRoot\main.py"
+    & $projectPython -m PyInstaller --noconfirm --clean --onefile --windowed --name "DisplayControl" $iconArg --distpath "$ProjectRoot\dist" "$ProjectRoot\main.py"
 } catch {
     Write-Error "DisplayControl build failed: $_"
     exit 1
@@ -28,7 +43,7 @@ try {
 # Step 2: Build tray executable
 Write-Host "[2/5] Building tray.exe..."
 try {
-    & $projectPython -m PyInstaller --noconfirm --clean --onefile --windowed --name "tray" --distpath "$ProjectRoot\dist" "$ProjectRoot\tray.py"
+    & $projectPython -m PyInstaller --noconfirm --clean --onefile --windowed --name "tray" $iconArg --distpath "$ProjectRoot\dist" "$ProjectRoot\tray.py"
 } catch {
     Write-Error "tray build failed: $_"
     exit 1
@@ -37,7 +52,7 @@ try {
 # Step 3: Build background executable
 Write-Host "[3/5] Building overlay_bg.exe..."
 try {
-    & $projectPython -m PyInstaller --noconfirm --clean --onefile --windowed --name "overlay_bg" --distpath "$ProjectRoot\dist" "$ProjectRoot\overlay_bg.py"
+    & $projectPython -m PyInstaller --noconfirm --clean --onefile --windowed --name "overlay_bg" $iconArg --distpath "$ProjectRoot\dist" "$ProjectRoot\overlay_bg.py"
 } catch {
     Write-Error "overlay_bg build failed: $_"
     exit 1
@@ -83,4 +98,4 @@ try {
 }
 
 # Output result
-Write-Host "Build complete! Installer is in $ProjectRoot\DisplayControlSetup_v1.0.5.exe"
+Write-Host "Build complete! Installer is in $ProjectRoot\DisplayControlSetup_v1.0.6.exe"

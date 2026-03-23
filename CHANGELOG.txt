@@ -1,6 +1,11 @@
 Display Control+ Changelog
 =========================
 
+v1.0.6 (2026-03-22)
+- App icon now appears correctly on all EXEs, installer, taskbar, and desktop shortcut
+- Auto-update now kills tray and overlay processes before launching installer, preventing "app already running" errors
+- Installer EXE branding updated with Display Control+ logo
+
 v1.0.5 (2026-03-22)
 - Update now installs silently (no wizard shown) — app closes, updates, and reopens automatically
 - Tray and dashboard relaunch after a silent update without user interaction

@@ -3,12 +3,13 @@
 
 [Setup]
 AppName=Display Control
-AppVersion=1.0.5
+AppVersion=1.0.6
 DefaultDirName={commonpf64}\Display Control
 DefaultGroupName=Display Control
 UninstallDisplayIcon={app}\DisplayControl.exe
 OutputDir=..
-OutputBaseFilename=DisplayControlSetup_v1.0.5
+OutputBaseFilename=DisplayControlSetup_v1.0.6
+SetupIconFile=..\Display Control+ Logo.ico
 Compression=lzma
 SolidCompression=yes
 ArchitecturesInstallIn64BitMode=x64compatible
@@ -19,6 +20,7 @@ Source: "..\dist\DisplayControl.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\dist\tray.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\dist\overlay_bg.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\Display Control+ Logo.png"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
+Source: "..\Display Control+ Logo.ico"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 Source: "..\KnightLogicsLogo.png"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 
 [Icons]

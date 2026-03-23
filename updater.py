@@ -15,7 +15,7 @@ import threading
 import tkinter as tk
 
 # ── Version ──────────────────────────────────────────────────────────────────
-CURRENT_VERSION = "1.0.5"          # bump this string on every release
+CURRENT_VERSION = "1.0.6"          # bump this string on every release
 RELEASES_API    = "https://api.github.com/repos/Knight-Logics/display-control-plus/releases/latest"
 RELEASES_PAGE   = "https://github.com/Knight-Logics/display-control-plus/releases/latest"
 APPDATA_ROOT    = os.environ.get("APPDATA", os.path.expanduser("~"))
@@ -147,8 +147,15 @@ def _show_update_dialog(parent: tk.Tk, latest_tag: str, asset_url: str | None, a
 
     def _launch_installer(path: str):
         flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        # Kill sibling processes so the installer can replace their files cleanly.
+        for proc in ("tray.exe", "overlay_bg.exe"):
+            subprocess.run(
+                ["taskkill", "/F", "/IM", proc],
+                creationflags=flags,
+                capture_output=True
+            )
         subprocess.Popen(
-            [path, "/SILENT", "/NORESTART", "/CLOSEAPPLICATIONS"],
+            [path, "/SILENT", "/NORESTART"],
             creationflags=flags
         )
 
