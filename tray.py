@@ -7,7 +7,7 @@ import sys
 import threading
 import time
 
-from PIL import Image
+from PIL import Image, ImageFilter, ImageOps
 
 try:
     import pystray
@@ -22,6 +22,7 @@ LOG_PATH = os.path.join(RUNTIME_DIR, "overlay.log")
 CONFIG_PATH = os.path.join(RUNTIME_DIR, "config.json")
 BG_LOCK_PATH = os.path.join(RUNTIME_DIR, "overlay_bg.lock")
 GUI_LOCK_PATH = os.path.join(RUNTIME_DIR, "display_control_gui.lock")
+TRAY_LOCK_PATH = os.path.join(RUNTIME_DIR, "tray.lock")
 
 logging.basicConfig(filename=LOG_PATH, level=logging.DEBUG, format="%(asctime)s %(levelname)s %(message)s")
 
@@ -83,6 +84,40 @@ def is_dashboard_running():
     except Exception:
         pass
     return False
+
+
+def is_tray_running():
+    if not os.path.exists(TRAY_LOCK_PATH):
+        return False
+    pid = _load_lock_pid(TRAY_LOCK_PATH)
+    if pid is None:
+        try:
+            os.remove(TRAY_LOCK_PATH)
+        except Exception:
+            pass
+        return False
+    if _is_pid_alive(pid):
+        return True
+    try:
+        os.remove(TRAY_LOCK_PATH)
+    except Exception:
+        pass
+    return False
+
+
+def set_tray_lock(state):
+    if state:
+        try:
+            with open(TRAY_LOCK_PATH, "w", encoding="utf-8") as lock_file:
+                lock_file.write(str(os.getpid()))
+        except Exception:
+            pass
+        return
+    try:
+        if os.path.exists(TRAY_LOCK_PATH):
+            os.remove(TRAY_LOCK_PATH)
+    except Exception:
+        pass
 
 
 def _is_pid_alive(pid):
@@ -228,15 +263,21 @@ def _status_label(_item):
 
 
 def _build_icon_image():
-    primary_logo = _first_existing_path("Display Control+ Logo.png")
+    primary_logo = _first_existing_path("Display Control+ Logo.ico")
+    if not primary_logo or not os.path.exists(primary_logo):
+        primary_logo = _first_existing_path("Display Control+ Logo.png")
     fallback_logo = _first_existing_path("KnightLogicsLogo.png")
     chosen = primary_logo if os.path.exists(primary_logo) else fallback_logo
 
     if os.path.exists(chosen):
         with Image.open(chosen) as img:
             icon_img = img.convert("RGBA")
-            icon_img.thumbnail((64, 64), Image.Resampling.LANCZOS)
-            return icon_img
+            canvas = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
+            fit = ImageOps.contain(icon_img, (58, 58), Image.Resampling.LANCZOS)
+            fit = fit.filter(ImageFilter.UnsharpMask(radius=1.4, percent=180, threshold=2))
+            offset = ((64 - fit.width) // 2, (64 - fit.height) // 2)
+            canvas.alpha_composite(fit, offset)
+            return canvas
 
     img = Image.new("RGBA", (64, 64), (15, 17, 21, 255))
     return img
@@ -257,22 +298,31 @@ def run_tray():
         ctypes.windll.user32.MessageBoxW(0, "pystray is required for system tray mode. Install pystray to enable tray controls.", "Display Control+", 0x40)
         return
 
+    if is_tray_running():
+        logging.info("Tray is already running. Exiting duplicate launch.")
+        return
+
+    set_tray_lock(True)
+
     # Default startup behavior for a professional package: protection active unless user paused it.
-    if not is_paused():
-        start_background_if_needed()
+    try:
+        if not is_paused():
+            start_background_if_needed()
 
-    image = _build_icon_image()
-    menu = pystray.Menu(
-        pystray.MenuItem(_status_label, None, enabled=False),
-        pystray.MenuItem("Open Dashboard", _on_open),
-        pystray.MenuItem(_pause_label, _on_pause_resume),
-        pystray.MenuItem("Exit Completely", _on_exit)
-    )
+        image = _build_icon_image()
+        menu = pystray.Menu(
+            pystray.MenuItem(_status_label, None, enabled=False),
+            pystray.MenuItem("Open Dashboard", _on_open),
+            pystray.MenuItem(_pause_label, _on_pause_resume),
+            pystray.MenuItem("Exit Completely", _on_exit)
+        )
 
-    icon = pystray.Icon("display_control_plus", image, "Display Control+", menu)
-    icon.on_activate = _on_open  # Left-click opens dashboard
-    threading.Thread(target=keep_background_alive, daemon=True).start()
-    icon.run()
+        icon = pystray.Icon("display_control_plus", image, "Display Control+", menu)
+        icon.on_activate = _on_open  # Left-click opens dashboard
+        threading.Thread(target=keep_background_alive, daemon=True).start()
+        icon.run()
+    finally:
+        set_tray_lock(False)
 
 
 if __name__ == "__main__":

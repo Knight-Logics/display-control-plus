@@ -98,15 +98,6 @@ def ensure_overlay_bg_task():
             print(f"Failed to create task '{task_name}'.")
         return
 
-    run_result = subprocess.run(
-        ["SchTasks", "/Run", "/TN", task_name],
-        capture_output=True,
-        text=True,
-        check=False,
-        creationflags=subprocess.CREATE_NO_WINDOW,
-    )
-    logging.info(f"Task run result: rc={run_result.returncode} out={run_result.stdout} err={run_result.stderr}")
-
     verify_result = subprocess.run(
         ["SchTasks", "/Query", "/TN", task_name],
         capture_output=True,

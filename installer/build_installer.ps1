@@ -20,14 +20,15 @@ $icoPath = "$ProjectRoot\Display Control+ Logo.ico"
 $pngPath = "$ProjectRoot\Display Control+ Logo.png"
 Write-Host "[0/5] Generating ICO from PNG..."
 & $projectPython -c "
-from PIL import Image, ImageOps
+from PIL import Image, ImageFilter, ImageOps
 img = Image.open(r'$pngPath').convert('RGBA')
 sizes = [(16,16),(24,24),(32,32),(48,48),(64,64),(128,128),(256,256)]
 frames = []
 for w, h in sizes:
     canvas = Image.new('RGBA', (w, h), (0, 0, 0, 0))
-    # Keep source proportions while fitting to icon-safe area for sharper desktop/taskbar rendering.
-    fit = ImageOps.contain(img, (int(w * 0.84), int(h * 0.84)), Image.Resampling.LANCZOS)
+    # Fill more of the icon canvas for a sharper Windows taskbar/shortcut glyph.
+    fit = ImageOps.contain(img, (int(w * 0.96), int(h * 0.96)), Image.Resampling.LANCZOS)
+    fit = fit.filter(ImageFilter.UnsharpMask(radius=max(0.8, w / 48.0), percent=165, threshold=2))
     x = (w - fit.width) // 2
     y = (h - fit.height) // 2
     canvas.alpha_composite(fit, (x, y))
@@ -107,4 +108,4 @@ Invoke-BuildStep {
 } "Inno Setup build failed."
 
 # Output result
-Write-Host "Build complete! Installer is in $ProjectRoot\DisplayControlSetup_v1.0.10.exe"
+Write-Host "Build complete! Installer is in $ProjectRoot\DisplayControlSetup_v1.0.11.exe"

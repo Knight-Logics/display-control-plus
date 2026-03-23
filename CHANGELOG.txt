@@ -1,6 +1,11 @@
 Display Control+ Changelog
 =========================
 
+v1.0.11 (2026-03-23)
+- Fixed duplicate tray icons by preventing dashboard startup registration from force-running the tray task
+- Added a tray singleton lock so accidental second tray launches exit immediately
+- Increased icon fill and sharpening for cleaner rendering on the Windows taskbar and tray
+
 v1.0.10 (2026-03-22)
 - Dashboard sets an explicit AppUserModelID and prefers packaged ICO for taskbar/process icon consistency
 - Installer now removes legacy shortcut names so updates replace old links cleanly
