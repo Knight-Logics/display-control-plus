@@ -12,15 +12,17 @@ import os
 import subprocess
 import tempfile
 import threading
+import time
 import tkinter as tk
 
 # ── Version ──────────────────────────────────────────────────────────────────
-CURRENT_VERSION = "1.0.7"          # bump this string on every release
+CURRENT_VERSION = "1.0.8"          # bump this string on every release
 RELEASES_API    = "https://api.github.com/repos/Knight-Logics/display-control-plus/releases/latest"
 RELEASES_PAGE   = "https://github.com/Knight-Logics/display-control-plus/releases/latest"
 APPDATA_ROOT    = os.environ.get("APPDATA", os.path.expanduser("~"))
 RUNTIME_DIR     = os.path.join(APPDATA_ROOT, "KnightLogics", "DisplayControlPlus")
 UPDATES_DIR     = os.path.join(RUNTIME_DIR, "updates")
+PENDING_UPDATE_PATH = os.path.join(RUNTIME_DIR, "pending_update.json")
 
 os.makedirs(UPDATES_DIR, exist_ok=True)
 
@@ -44,6 +46,47 @@ def _fetch_latest_release() -> dict | None:
     except Exception as e:
         logging.debug(f"[updater] Could not fetch latest release payload: {e}")
         return None
+
+
+def _read_pending_update() -> dict:
+    try:
+        with open(PENDING_UPDATE_PATH, "r", encoding="utf-8") as fh:
+            payload = json.load(fh)
+        if isinstance(payload, dict):
+            return payload
+    except Exception:
+        pass
+    return {}
+
+
+def _write_pending_update(tag: str):
+    try:
+        with open(PENDING_UPDATE_PATH, "w", encoding="utf-8") as fh:
+            json.dump({"tag": tag, "ts": int(time.time())}, fh)
+    except Exception as e:
+        logging.debug(f"[updater] Could not write pending update state: {e}")
+
+
+def _clear_pending_update():
+    try:
+        if os.path.exists(PENDING_UPDATE_PATH):
+            os.remove(PENDING_UPDATE_PATH)
+    except Exception as e:
+        logging.debug(f"[updater] Could not clear pending update state: {e}")
+
+
+def _should_suppress_prompt(latest_tag: str) -> bool:
+    pending = _read_pending_update()
+    pending_tag = str(pending.get("tag", "")).strip()
+    pending_ts = int(pending.get("ts", 0) or 0)
+    if not pending_tag:
+        return False
+    if _parse(CURRENT_VERSION) >= _parse(pending_tag):
+        _clear_pending_update()
+        return False
+    if pending_tag == latest_tag and (time.time() - pending_ts) < 900:
+        return True
+    return False
 
 
 def _select_installer_asset(release_payload: dict) -> tuple[str, str] | tuple[None, None]:
@@ -175,6 +218,7 @@ def _show_update_dialog(parent: tk.Tk, latest_tag: str, asset_url: str | None, a
         def _worker():
             try:
                 installer_path = _download_installer(resolved_url, resolved_name, status_cb=_set_status)
+                _write_pending_update(latest_tag)
                 _set_status("Installing update — app will reopen automatically...")
                 dlg.after(0, lambda: _launch_installer(installer_path))
                 # Close dashboard after launching installer so the installer can replace files.
@@ -233,6 +277,8 @@ def check_for_updates(parent: tk.Tk):
         try:
             tag = str(payload.get("tag_name", "")).strip()
             if not tag:
+                return
+            if _should_suppress_prompt(tag):
                 return
             if _parse(tag) > _parse(CURRENT_VERSION):
                 asset_url, asset_name = _select_installer_asset(payload)

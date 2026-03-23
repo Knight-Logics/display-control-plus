@@ -30,33 +30,37 @@ print('ICO ready')
 
 $iconArg = "--icon=$icoPath"
 
+function Invoke-BuildStep {
+    param(
+        [scriptblock]$Command,
+        [string]$FailureMessage
+    )
+
+    & $Command
+    if ($LASTEXITCODE -ne 0) {
+        Write-Error $FailureMessage
+        exit 1
+    }
+}
+
 # Step 1: Build GUI executable
 Write-Host "[1/5] Building DisplayControl.exe..."
 Push-Location $ProjectRoot
-try {
+Invoke-BuildStep {
     & $projectPython -m PyInstaller --noconfirm --clean --onefile --windowed --name "DisplayControl" $iconArg --distpath "$ProjectRoot\dist" "$ProjectRoot\main.py"
-} catch {
-    Write-Error "DisplayControl build failed: $_"
-    exit 1
-}
+} "DisplayControl build failed."
 
 # Step 2: Build tray executable
 Write-Host "[2/5] Building tray.exe..."
-try {
+Invoke-BuildStep {
     & $projectPython -m PyInstaller --noconfirm --clean --onefile --windowed --name "tray" $iconArg --distpath "$ProjectRoot\dist" "$ProjectRoot\tray.py"
-} catch {
-    Write-Error "tray build failed: $_"
-    exit 1
-}
+} "tray build failed."
 
 # Step 3: Build background executable
 Write-Host "[3/5] Building overlay_bg.exe..."
-try {
+Invoke-BuildStep {
     & $projectPython -m PyInstaller --noconfirm --clean --onefile --windowed --name "overlay_bg" $iconArg --distpath "$ProjectRoot\dist" "$ProjectRoot\overlay_bg.py"
-} catch {
-    Write-Error "overlay_bg build failed: $_"
-    exit 1
-}
+} "overlay_bg build failed."
 Pop-Location
 
 # Step 4: Validate core artifacts exist
@@ -90,12 +94,9 @@ if (-not (Get-Command $innoSetup -ErrorAction SilentlyContinue)) {
     }
 }
 $issFile = "$PSScriptRoot\OLEDProtector.iss"
-try {
+Invoke-BuildStep {
     & $innoSetup "$issFile"
-} catch {
-    Write-Error "Inno Setup build failed: $_"
-    exit 1
-}
+} "Inno Setup build failed."
 
 # Output result
-Write-Host "Build complete! Installer is in $ProjectRoot\DisplayControlSetup_v1.0.7.exe"
+Write-Host "Build complete! Installer is in $ProjectRoot\DisplayControlSetup_v1.0.8.exe"

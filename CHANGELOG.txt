@@ -1,6 +1,11 @@
 Display Control+ Changelog
 =========================
 
+v1.0.8 (2026-03-22)
+- Rebuilt the app EXEs so the packaged app version matches the installer/release version
+- Suppressed immediate repeat update prompts right after a self-update restart
+- Made the build script fail on real non-zero exits instead of noisy tool output
+
 v1.0.7 (2026-03-22)
 - Installer now force-terminates DisplayControl.exe, tray.exe, and overlay_bg.exe before replacing files
 - Fixes tray.exe file-lock errors during manual installs and updater-driven installs
