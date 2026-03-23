@@ -638,6 +638,7 @@ def launch_gui():
 
     app_dir = app_base_dir()
     logo_path = _first_existing_path("Display Control+ Logo.png")
+    logo_ico_path = _first_existing_path("Display Control+ Logo.ico")
     brand_logo_path = _first_existing_path("KnightLogicsLogo.png")
     header_logo = None
     brand_logo = None
@@ -646,20 +647,17 @@ def launch_gui():
 
     if os.path.exists(logo_path):
         try:
-            import tempfile
             with Image.open(logo_path) as base_logo:
                 icon_img = base_logo.copy().convert("RGBA")
                 icon_img.thumbnail((64, 64), Image.Resampling.LANCZOS)
                 window_icon = ImageTk.PhotoImage(icon_img)
                 win.iconphoto(True, window_icon)
 
-                # Write a temp .ico so the Windows taskbar shows the correct icon.
-                # iconphoto alone is not sufficient for the native Win32 taskbar button.
-                _ico_fd, _tmp_ico_path = tempfile.mkstemp(suffix=".ico")
-                os.close(_ico_fd)
-                ico_src = base_logo.copy().convert("RGBA")
-                ico_src.save(_tmp_ico_path, format="ICO", sizes=[(16, 16), (32, 32), (48, 48)])
-                win.iconbitmap(_tmp_ico_path)
+                # Prefer the packaged ICO so desktop/taskbar/app icons stay consistent and crisp.
+                if os.path.exists(logo_ico_path):
+                    win.iconbitmap(logo_ico_path)
+                else:
+                    win.iconphoto(True, window_icon)
 
                 header_img = base_logo.copy().convert("RGBA")
                 header_img.thumbnail((40, 40), Image.Resampling.LANCZOS)
@@ -963,9 +961,9 @@ def launch_gui():
     ttk.Label(right_card, text="Detection mode", style="Body.TLabel").grid(row=5, column=0, sticky="nw", pady=(2, 8), padx=(0, 10))
     detect_frame = tk.Frame(right_card, bg="#161a22")
     detect_frame.grid(row=5, column=1, sticky="w", pady=(2, 8))
-    ttk.Radiobutton(detect_frame, text="Input (keyboard & mouse)", variable=detection_mode_var, value="input", style="Dark.TRadiobutton").pack(side=tk.LEFT, padx=(0, 10))
-    ttk.Radiobutton(detect_frame, text="Activity (media / screen)", variable=detection_mode_var, value="activity", style="Dark.TRadiobutton").pack(side=tk.LEFT, padx=(0, 10))
-    ttk.Radiobutton(detect_frame, text="Both (require all idle)", variable=detection_mode_var, value="both", style="Dark.TRadiobutton").pack(side=tk.LEFT)
+    ttk.Radiobutton(detect_frame, text="Input", variable=detection_mode_var, value="input", style="Dark.TRadiobutton").pack(side=tk.LEFT, padx=(0, 10))
+    ttk.Radiobutton(detect_frame, text="Activity", variable=detection_mode_var, value="activity", style="Dark.TRadiobutton").pack(side=tk.LEFT, padx=(0, 10))
+    ttk.Radiobutton(detect_frame, text="Both", variable=detection_mode_var, value="both", style="Dark.TRadiobutton").pack(side=tk.LEFT)
 
     apply_row = ttk.Frame(right_card)
     apply_row.grid(row=6, column=0, columnspan=2, sticky="w", pady=(2, 6))
@@ -1377,11 +1375,6 @@ def launch_gui():
         win.mainloop()
     finally:
         set_gui_lock(False)
-        if _tmp_ico_path:
-            try:
-                os.remove(_tmp_ico_path)
-            except Exception:
-                pass
 
 # --- Entry Point ---
 if __name__ == "__main__":

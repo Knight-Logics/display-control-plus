@@ -20,11 +20,19 @@ $icoPath = "$ProjectRoot\Display Control+ Logo.ico"
 $pngPath = "$ProjectRoot\Display Control+ Logo.png"
 Write-Host "[0/5] Generating ICO from PNG..."
 & $projectPython -c "
-from PIL import Image
+from PIL import Image, ImageOps
 img = Image.open(r'$pngPath').convert('RGBA')
 sizes = [(16,16),(24,24),(32,32),(48,48),(64,64),(128,128),(256,256)]
-resized = [img.resize(s, Image.LANCZOS) for s in sizes]
-resized[0].save(r'$icoPath', format='ICO', sizes=sizes, append_images=resized[1:])
+frames = []
+for w, h in sizes:
+    canvas = Image.new('RGBA', (w, h), (0, 0, 0, 0))
+    # Keep source proportions while fitting to icon-safe area for sharper desktop/taskbar rendering.
+    fit = ImageOps.contain(img, (int(w * 0.84), int(h * 0.84)), Image.Resampling.LANCZOS)
+    x = (w - fit.width) // 2
+    y = (h - fit.height) // 2
+    canvas.alpha_composite(fit, (x, y))
+    frames.append(canvas)
+frames[0].save(r'$icoPath', format='ICO', sizes=sizes, append_images=frames[1:])
 print('ICO ready')
 "
 
@@ -99,4 +107,4 @@ Invoke-BuildStep {
 } "Inno Setup build failed."
 
 # Output result
-Write-Host "Build complete! Installer is in $ProjectRoot\DisplayControlSetup_v1.0.8.exe"
+Write-Host "Build complete! Installer is in $ProjectRoot\DisplayControlSetup_v1.0.9.exe"

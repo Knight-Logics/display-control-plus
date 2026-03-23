@@ -3,12 +3,12 @@
 
 [Setup]
 AppName=Display Control
-AppVersion=1.0.8
+AppVersion=1.0.9
 DefaultDirName={commonpf64}\Display Control
 DefaultGroupName=Display Control
 UninstallDisplayIcon={app}\DisplayControl.exe
 OutputDir=..
-OutputBaseFilename=DisplayControlSetup_v1.0.8
+OutputBaseFilename=DisplayControlSetup_v1.0.9
 SetupIconFile=..\Display Control+ Logo.ico
 Compression=lzma
 SolidCompression=yes
@@ -24,11 +24,10 @@ Source: "..\Display Control+ Logo.ico"; DestDir: "{app}"; Flags: ignoreversion s
 Source: "..\KnightLogicsLogo.png"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 
 [Icons]
-Name: "{commondesktop}\Display Control"; Filename: "{app}\DisplayControl.exe"; Tasks: desktopicon
-Name: "{group}\Display Control"; Filename: "{app}\DisplayControl.exe"
+Name: "{commondesktop}\Display Control+"; Filename: "{app}\DisplayControl.exe"; IconFilename: "{app}\Display Control+ Logo.ico"
+Name: "{group}\Display Control+"; Filename: "{app}\DisplayControl.exe"; IconFilename: "{app}\Display Control+ Logo.ico"
 
 [Tasks]
-Name: "desktopicon"; Description: "Create a &desktop shortcut"; GroupDescription: "Additional icons:"; Flags: checkedonce
 Name: "trayicon"; Description: "Start in &Task Tray on login"; GroupDescription: "Startup options:"; Flags: checkedonce
 
 [Run]
