@@ -3,12 +3,12 @@
 
 [Setup]
 AppName=Display Control
-AppVersion=1.0.6
+AppVersion=1.0.7
 DefaultDirName={commonpf64}\Display Control
 DefaultGroupName=Display Control
 UninstallDisplayIcon={app}\DisplayControl.exe
 OutputDir=..
-OutputBaseFilename=DisplayControlSetup_v1.0.6
+OutputBaseFilename=DisplayControlSetup_v1.0.7
 SetupIconFile=..\Display Control+ Logo.ico
 Compression=lzma
 SolidCompression=yes
@@ -50,3 +50,31 @@ Filename: "cmd.exe"; \
   Flags: runhidden; Check: WizardSilent()
 Filename: "{app}\tray.exe"; Flags: nowait; Check: WizardSilent()
 Filename: "{app}\DisplayControl.exe"; Flags: nowait; Check: WizardSilent()
+
+[Code]
+function KillRunningProcess(const ImageName: string): Boolean;
+var
+  ResultCode: Integer;
+begin
+  Result := Exec(
+    ExpandConstant('{cmd}'),
+    '/C taskkill /F /T /IM "' + ImageName + '"',
+    '',
+    SW_HIDE,
+    ewWaitUntilTerminated,
+    ResultCode
+  );
+end;
+
+procedure ShutdownDisplayControlProcesses();
+begin
+  KillRunningProcess('DisplayControl.exe');
+  KillRunningProcess('tray.exe');
+  KillRunningProcess('overlay_bg.exe');
+end;
+
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+begin
+  ShutdownDisplayControlProcesses();
+  Result := '';
+end;

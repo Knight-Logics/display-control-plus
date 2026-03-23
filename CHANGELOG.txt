@@ -1,6 +1,10 @@
 Display Control+ Changelog
 =========================
 
+v1.0.7 (2026-03-22)
+- Installer now force-terminates DisplayControl.exe, tray.exe, and overlay_bg.exe before replacing files
+- Fixes tray.exe file-lock errors during manual installs and updater-driven installs
+
 v1.0.6 (2026-03-22)
 - App icon now appears correctly on all EXEs, installer, taskbar, and desktop shortcut
 - Auto-update now kills tray and overlay processes before launching installer, preventing "app already running" errors

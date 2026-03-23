@@ -15,7 +15,7 @@ import threading
 import tkinter as tk
 
 # ── Version ──────────────────────────────────────────────────────────────────
-CURRENT_VERSION = "1.0.6"          # bump this string on every release
+CURRENT_VERSION = "1.0.7"          # bump this string on every release
 RELEASES_API    = "https://api.github.com/repos/Knight-Logics/display-control-plus/releases/latest"
 RELEASES_PAGE   = "https://github.com/Knight-Logics/display-control-plus/releases/latest"
 APPDATA_ROOT    = os.environ.get("APPDATA", os.path.expanduser("~"))
