@@ -9,6 +9,7 @@ import secrets
 import sys
 import threading
 import time
+import re
 
 APPDATA_ROOT = os.environ.get("APPDATA", os.path.expanduser("~"))
 RUNTIME_PROFILE = os.environ.get(
@@ -61,6 +62,18 @@ def _recovery_signing_secret():
     return str(secret).encode("utf-8")
 
 
+def _normalize_recovery_code(recovery_code):
+    """Normalize pasted recovery codes from email clients.
+
+    Some clients insert hidden whitespace/newlines when wrapping very long
+    tokens. Remove those artifacts before parsing.
+    """
+    code = str(recovery_code or "")
+    code = code.replace("\ufeff", "").replace("\u200b", "")
+    code = re.sub(r"\s+", "", code)
+    return code.strip().strip("`\"'")
+
+
 def _build_recovery_token(purchase_type, hours_added, email):
     payload = {
         "v": 1,
@@ -78,16 +91,19 @@ def _build_recovery_token(purchase_type, hours_added, email):
 
 
 def _parse_recovery_token(recovery_code):
-    code = str(recovery_code or "").strip()
-    if not code.startswith("DCP2."):
+    code = _normalize_recovery_code(recovery_code)
+    if not code or not code.upper().startswith("DCP2."):
         return None
     try:
-        _, payload_b64, sig = code.split(".", 2)
+        prefix, payload_b64, sig = code.split(".", 2)
     except ValueError:
         return None
 
+    if prefix.upper() != "DCP2":
+        return None
+
     expected_sig = hmac.new(_recovery_signing_secret(), payload_b64.encode("ascii"), hashlib.sha256).hexdigest()
-    if not hmac.compare_digest(sig, expected_sig):
+    if not hmac.compare_digest(str(sig).lower(), expected_sig.lower()):
         return None
 
     try:
@@ -279,7 +295,7 @@ def activate_lifetime(email=""):
 
 
 def restore_from_recovery_code(recovery_code, email=""):
-    recovery_code = str(recovery_code or "").strip()
+    recovery_code = _normalize_recovery_code(recovery_code)
     email = str(email or "").strip().lower()
     if not recovery_code:
         return {"ok": False, "error": "Recovery code is required."}
