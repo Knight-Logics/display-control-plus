@@ -6,7 +6,11 @@ import logging
 import multiprocessing
 
 APPDATA_ROOT = os.environ.get("APPDATA", os.path.expanduser("~"))
-RUNTIME_DIR = os.path.join(APPDATA_ROOT, "KnightLogics", "DisplayControlPlus")
+RUNTIME_PROFILE = os.environ.get(
+    "DISPLAY_CONTROL_RUNTIME_PROFILE",
+    "DisplayControlPlus" if getattr(sys, "frozen", False) else "DisplayControlPlus-DevLocal",
+)
+RUNTIME_DIR = os.path.join(APPDATA_ROOT, "KnightLogics", RUNTIME_PROFILE)
 os.makedirs(RUNTIME_DIR, exist_ok=True)
 
 # If running as python.exe (console) and NOT in background mode, re-launch

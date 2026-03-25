@@ -4,7 +4,19 @@ import subprocess
 import sys
 
 APPDATA_ROOT = os.environ.get("APPDATA", os.path.expanduser("~"))
-RUNTIME_DIR = os.path.join(APPDATA_ROOT, "KnightLogics", "DisplayControlPlus")
+RUNTIME_PROFILE = os.environ.get(
+    "DISPLAY_CONTROL_RUNTIME_PROFILE",
+    "DisplayControlPlus" if getattr(sys, "frozen", False) else "DisplayControlPlus-DevLocal",
+)
+TASK_NAME = os.environ.get(
+    "DISPLAY_CONTROL_TASK_NAME",
+    "DisplayControlBackground" if getattr(sys, "frozen", False) else "DisplayControlBackground-DevLocal",
+)
+RUN_VALUE_NAME = os.environ.get(
+    "DISPLAY_CONTROL_RUN_VALUE",
+    "DisplayControlPlusTray" if getattr(sys, "frozen", False) else "DisplayControlPlusTray-DevLocal",
+)
+RUNTIME_DIR = os.path.join(APPDATA_ROOT, "KnightLogics", RUNTIME_PROFILE)
 os.makedirs(RUNTIME_DIR, exist_ok=True)
 
 
@@ -30,10 +42,9 @@ def _first_existing_path(*parts):
 
 
 def _set_run_key_startup(start_cmd):
-    value_name = "DisplayControlPlusTray"
     reg_path = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run"
     result = subprocess.run(
-        ["reg", "add", reg_path, "/v", value_name, "/t", "REG_SZ", "/d", start_cmd, "/f"],
+        ["reg", "add", reg_path, "/v", RUN_VALUE_NAME, "/t", "REG_SZ", "/d", start_cmd, "/f"],
         capture_output=True,
         text=True,
         check=False,
@@ -69,10 +80,8 @@ def ensure_overlay_bg_task():
         tr_cmd = f'"{pythonw_exe}" "{py_path}"'
         logging.info(f"[TASK] Using PY fallback for /TR: {tr_cmd}")
 
-    task_name = "DisplayControlBackground"
-
     del_result = subprocess.run(
-        ["SchTasks", "/Delete", "/F", "/TN", task_name],
+        ["SchTasks", "/Delete", "/F", "/TN", TASK_NAME],
         capture_output=True,
         text=True,
         check=False,
@@ -81,7 +90,7 @@ def ensure_overlay_bg_task():
     logging.info(f"Task delete result: rc={del_result.returncode} out={del_result.stdout} err={del_result.stderr}")
 
     create_result = subprocess.run(
-        ["SchTasks", "/Create", "/F", "/TN", task_name, "/TR", tr_cmd, "/SC", "ONLOGON"],
+        ["SchTasks", "/Create", "/F", "/TN", TASK_NAME, "/TR", tr_cmd, "/SC", "ONLOGON"],
         capture_output=True,
         text=True,
         check=False,
@@ -93,22 +102,22 @@ def ensure_overlay_bg_task():
             if _set_run_key_startup(tr_cmd):
                 print(f"Scheduled task denied; configured per-user Run startup instead: {tr_cmd}")
             else:
-                print(f"Failed to create task '{task_name}' and failed to set Run-key startup.")
+                print(f"Failed to create task '{TASK_NAME}' and failed to set Run-key startup.")
         else:
-            print(f"Failed to create task '{task_name}'.")
+            print(f"Failed to create task '{TASK_NAME}'.")
         return
 
     verify_result = subprocess.run(
-        ["SchTasks", "/Query", "/TN", task_name],
+        ["SchTasks", "/Query", "/TN", TASK_NAME],
         capture_output=True,
         text=True,
         check=False,
         creationflags=subprocess.CREATE_NO_WINDOW,
     )
     if verify_result.returncode == 0:
-        print(f"Task '{task_name}' is configured and started for {tr_cmd}")
+        print(f"Task '{TASK_NAME}' is configured and started for {tr_cmd}")
     else:
-        print(f"Task '{task_name}' created but query verification failed.")
+        print(f"Task '{TASK_NAME}' created but query verification failed.")
 
 if __name__ == "__main__":
     logging.basicConfig(filename=os.path.join(RUNTIME_DIR, "overlay.log"), level=logging.DEBUG, format="%(asctime)s %(levelname)s %(message)s")

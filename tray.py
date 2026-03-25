@@ -15,7 +15,11 @@ except ImportError:
     pystray = None
 
 APPDATA_ROOT = os.environ.get("APPDATA", os.path.expanduser("~"))
-RUNTIME_DIR = os.path.join(APPDATA_ROOT, "KnightLogics", "DisplayControlPlus")
+RUNTIME_PROFILE = os.environ.get(
+    "DISPLAY_CONTROL_RUNTIME_PROFILE",
+    "DisplayControlPlus" if getattr(sys, "frozen", False) else "DisplayControlPlus-DevLocal",
+)
+RUNTIME_DIR = os.path.join(APPDATA_ROOT, "KnightLogics", RUNTIME_PROFILE)
 os.makedirs(RUNTIME_DIR, exist_ok=True)
 
 LOG_PATH = os.path.join(RUNTIME_DIR, "overlay.log")
@@ -67,6 +71,26 @@ def _load_lock_pid(lock_path):
     return None
 
 
+def _load_lock_payload(lock_path):
+    try:
+        with open(lock_path, "r", encoding="utf-8") as lock_file:
+            raw = lock_file.read().strip()
+        if not raw:
+            return None
+        if raw.isdigit():
+            return {"pid": int(raw), "process_name": ""}
+        payload = json.loads(raw)
+        pid = payload.get("pid")
+        if isinstance(pid, str) and pid.isdigit():
+            pid = int(pid)
+        if not isinstance(pid, int):
+            return None
+        process_name = str(payload.get("process_name", "")).strip().lower()
+        return {"pid": pid, "process_name": process_name}
+    except Exception:
+        return None
+
+
 def is_dashboard_running():
     if not os.path.exists(GUI_LOCK_PATH):
         return False
@@ -89,13 +113,14 @@ def is_dashboard_running():
 def is_tray_running():
     if not os.path.exists(TRAY_LOCK_PATH):
         return False
-    pid = _load_lock_pid(TRAY_LOCK_PATH)
-    if pid is None:
+    payload = _load_lock_payload(TRAY_LOCK_PATH)
+    if payload is None:
         try:
             os.remove(TRAY_LOCK_PATH)
         except Exception:
             pass
         return False
+    pid = payload.get("pid")
     if _is_pid_alive(pid):
         return True
     try:
@@ -107,17 +132,31 @@ def is_tray_running():
 
 def set_tray_lock(state):
     if state:
+        payload = {
+            "pid": os.getpid(),
+            "process_name": os.path.basename(sys.executable).lower(),
+        }
         try:
-            with open(TRAY_LOCK_PATH, "w", encoding="utf-8") as lock_file:
-                lock_file.write(str(os.getpid()))
+            fd = os.open(TRAY_LOCK_PATH, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            try:
+                os.write(fd, json.dumps(payload).encode("utf-8"))
+            finally:
+                os.close(fd)
+        except FileExistsError:
+            if not is_tray_running():
+                return set_tray_lock(True)
+            return False
         except Exception:
-            pass
-        return
+            return False
+        return True
     try:
         if os.path.exists(TRAY_LOCK_PATH):
-            os.remove(TRAY_LOCK_PATH)
+            payload = _load_lock_payload(TRAY_LOCK_PATH)
+            if payload is None or payload.get("pid") == os.getpid():
+                os.remove(TRAY_LOCK_PATH)
     except Exception:
         pass
+    return True
 
 
 def _is_pid_alive(pid):
@@ -302,7 +341,9 @@ def run_tray():
         logging.info("Tray is already running. Exiting duplicate launch.")
         return
 
-    set_tray_lock(True)
+    if not set_tray_lock(True):
+        logging.info("Tray lock acquisition failed; another instance is running.")
+        return
 
     # Default startup behavior for a professional package: protection active unless user paused it.
     try:
@@ -318,7 +359,8 @@ def run_tray():
         )
 
         icon = pystray.Icon("display_control_plus", image, "Display Control+", menu)
-        icon.on_activate = _on_open  # Left-click opens dashboard
+        # pystray exposes on_activate dynamically on some backends.
+        setattr(icon, "on_activate", _on_open)  # Left-click opens dashboard
         threading.Thread(target=keep_background_alive, daemon=True).start()
         icon.run()
     finally:

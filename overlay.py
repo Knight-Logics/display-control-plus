@@ -1,6 +1,6 @@
-import subprocess
+﻿import subprocess
 import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, messagebox, simpledialog, ttk
 import json
 import logging
 import multiprocessing
@@ -12,13 +12,113 @@ import time
 import webbrowser
 from PIL import Image, ImageTk
 from monitor_activity import MonitorActivityDetector
+from license_meter import get_status as get_license_status, consume_active_seconds, add_hours, activate_lifetime, restore_from_recovery_code
+from payment_service import is_payment_available, create_checkout_session, create_lifetime_session, confirm_session, open_checkout, send_recovery_email, restore_account_remote
+
+# Debug logging setup
+debug_window = None
+debug_text = None
+debug_queue = []
+
+def log_debug(msg):
+    """Log a message to the debug window and print to console."""
+    timestamp = time.strftime("%H:%M:%S")
+    log_msg = f"[{timestamp}] {msg}"
+    debug_queue.append(log_msg)
+    logging.info(msg)
+    if debug_text and debug_text.winfo_exists():
+        debug_text.config(state=tk.NORMAL)
+        debug_text.insert(tk.END, log_msg + "\n")
+        debug_text.see(tk.END)
+        debug_text.config(state=tk.DISABLED)
+
+def open_debug_window():
+    """Open a floating debug window."""
+    global debug_window, debug_text
+    if debug_window and debug_window.winfo_exists():
+        debug_window.lift()
+        return
+    
+    debug_window = tk.Toplevel()
+    debug_window.title("Display Control+ Debug Log")
+    debug_window.geometry("600x400")
+    debug_window.configure(bg="#0f1115")
+    
+    ttk.Label(debug_window, text="Debug Log:", style="Body.TLabel").pack(anchor="w", padx=10, pady=(10, 5))
+    
+    debug_text = tk.Text(
+        debug_window,
+        bg="#161a22",
+        fg="#d4dde9",
+        font=("Courier New", 9),
+        wrap=tk.WORD,
+        state=tk.DISABLED
+    )
+    debug_text.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
+    
+    # Populate with existing logs
+    for msg in debug_queue:
+        debug_text.config(state=tk.NORMAL)
+        debug_text.insert(tk.END, msg + "\n")
+        debug_text.config(state=tk.DISABLED)
+    debug_text.see(tk.END)
 
 APPDATA_ROOT = os.environ.get("APPDATA", os.path.expanduser("~"))
-RUNTIME_DIR = os.path.join(APPDATA_ROOT, "KnightLogics", "DisplayControlPlus")
+DEFAULT_RUNTIME_PROFILE = "DisplayControlPlus" if getattr(sys, "frozen", False) else "DisplayControlPlus-DevLocal"
+DEFAULT_TASK_NAME = "DisplayControlBackground" if getattr(sys, "frozen", False) else "DisplayControlBackground-DevLocal"
+RUNTIME_PROFILE = os.environ.get("DISPLAY_CONTROL_RUNTIME_PROFILE", DEFAULT_RUNTIME_PROFILE)
+TASK_NAME = os.environ.get("DISPLAY_CONTROL_TASK_NAME", DEFAULT_TASK_NAME)
+DEV_TEST_PURCHASES_ENABLED = (not getattr(sys, "frozen", False)) or os.environ.get("DISPLAY_CONTROL_ENABLE_TEST_PURCHASES", "").strip().lower() in ("1", "true", "yes", "on")
+RUNTIME_DIR = os.path.join(APPDATA_ROOT, "KnightLogics", RUNTIME_PROFILE)
 os.makedirs(RUNTIME_DIR, exist_ok=True)
+USAGE_STATE_PATH = os.path.join(RUNTIME_DIR, "overlay_usage_state.json")
 
 def runtime_path(name):
     return os.path.join(RUNTIME_DIR, name)
+
+
+def _atomic_json_write(path, payload):
+    tmp_path = f"{path}.tmp"
+    with open(tmp_path, "w", encoding="utf-8") as fh:
+        json.dump(payload, fh, indent=2)
+    os.replace(tmp_path, path)
+
+
+def _config_file_signature():
+    path = runtime_path("config.json")
+    try:
+        stat = os.stat(path)
+        return (stat.st_mtime_ns, stat.st_size)
+    except Exception:
+        return None
+
+
+def _read_usage_state():
+    try:
+        with open(USAGE_STATE_PATH, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        if isinstance(data, dict):
+            return data
+    except Exception:
+        pass
+    return {
+        "active": False,
+        "active_session_seconds": 0,
+        "remaining_seconds": 0,
+        "lifetime": False,
+        "updated_at": int(time.time()),
+    }
+
+
+def _write_usage_state(**updates):
+    state = _read_usage_state()
+    state.update(updates)
+    state["updated_at"] = int(time.time())
+    try:
+        with open(USAGE_STATE_PATH, "w", encoding="utf-8") as fh:
+            json.dump(state, fh, indent=2)
+    except Exception as e:
+        logging.debug(f"Could not write overlay usage state: {e}")
 
 
 def app_base_dir():
@@ -77,9 +177,8 @@ def _load_lock_payload(lock_path):
 
 def _start_startup_registration():
     try:
-        task_name = "DisplayControlBackground"
         check = subprocess.run(
-            ["SchTasks", "/Query", "/TN", task_name],
+            ["SchTasks", "/Query", "/TN", TASK_NAME],
             capture_output=True,
             text=True,
             check=False,
@@ -330,21 +429,30 @@ def save_config(monitors, selected, mode, file_paths, timeout, interval, enabled
         "timeout": active.get("timeout", timeout),
         "interval": active.get("interval", interval),
         "enabled": bool(active.get("enabled", enabled)),
-        "scope": active.get("scope", scope),
-        "detection_mode": active.get("detection_mode", detection_mode),
+        "scope": active.get("scope", scope) if active.get("scope", scope) in ("system", "per-monitor") else "system",
+        "detection_mode": active.get("detection_mode", detection_mode) if active.get("detection_mode", detection_mode) in ("input", "activity", "both") else "input",
         "paused": bool(existing.get("paused", False)) if paused is None else bool(paused),
         "setting_groups": groups
     }
-    with open(runtime_path("config.json"), "w") as f:
-        json.dump(config, f, indent=2)
+    _atomic_json_write(runtime_path("config.json"), config)
     logging.info(f"Config saved: {config}")
 
 def load_config():
     try:
-        with open(runtime_path("config.json"), "r") as f:
+        with open(runtime_path("config.json"), "r", encoding="utf-8") as f:
             return json.load(f)
     except Exception:
         return None
+
+
+def set_config_paused(paused, reason=""):
+    config = load_config() or {}
+    config["paused"] = bool(paused)
+    if reason:
+        config["pause_reason"] = reason
+    else:
+        config.pop("pause_reason", None)
+    _atomic_json_write(runtime_path("config.json"), config)
 
 # --- Single Instance Enforcement ---
 def is_background_running():
@@ -479,9 +587,25 @@ def run_background_overlay():
         logging.info('Background overlay already running. Exiting.')
         return
     set_background_lock(True)
+    _write_usage_state(active=False, active_session_seconds=0)
     try:
         last_config_dump = ""
+        last_config_sig = None
+        session_overlay_seconds = 0
         while True:
+            license_status = get_license_status()
+            if not license_status.get("can_protect", False):
+                set_config_paused(True, "license_exhausted")
+                _write_usage_state(
+                    active=False,
+                    active_session_seconds=session_overlay_seconds,
+                    remaining_seconds=license_status.get("remaining_seconds", 0),
+                    lifetime=bool(license_status.get("lifetime", False)),
+                )
+                logging.warning("Protection time is exhausted. Background overlay is waiting for license credits.")
+                time.sleep(15)
+                continue
+
             config = load_config() or {}
             if config.get("paused", False):
                 logging.info("Protection paused. Sleeping 5s.")
@@ -495,6 +619,7 @@ def run_background_overlay():
                 continue
 
             config_dump = json.dumps(groups, sort_keys=True)
+            last_config_sig = _config_file_signature()
             if config_dump != last_config_dump:
                 logging.info(f"Background overlay loaded setting groups: {json.dumps(groups, indent=2)}")
                 last_config_dump = config_dump
@@ -514,46 +639,51 @@ def run_background_overlay():
             detector.start()
 
             overlay_targets = {}
-            while True:
-                idle_times = detector.get_idle_times()
-                system_idle = get_idle_duration()
-                overlay_targets.clear()
+            try:
+                while True:
+                    idle_snapshot = detector.get_idle_snapshot()
+                    overlay_targets.clear()
 
-                for group in groups:
-                    indices = [i for i in group.get("monitor_indices", []) if isinstance(i, int) and i < len(all_monitors)]
-                    if not indices:
-                        continue
-                    timeout_min = group.get("timeout", 5)
-                    timeout_sec = int(float(timeout_min) * 60)
-                    scope = group.get("scope", "system")
+                    for group in groups:
+                        indices = [i for i in group.get("monitor_indices", []) if isinstance(i, int) and i < len(all_monitors)]
+                        if not indices:
+                            continue
 
-                    if scope == "system":
+                        timeout_min = group.get("timeout", 5)
+                        timeout_sec = int(float(timeout_min) * 60)
+                        scope = group.get("scope", "system")
                         detection_mode = group.get("detection_mode", "input")
-                        if detection_mode == "activity":
-                            effective_idle = idle_times.get("system", 0)
-                        elif detection_mode == "both":
-                            effective_idle = min(system_idle, idle_times.get("system", 0))
+                        if detection_mode not in ("input", "activity", "both"):
+                            detection_mode = "input"
+
+                        mode_idle = idle_snapshot.get(detection_mode, {})
+                        if scope == "system":
+                            if mode_idle.get("system", 0) >= timeout_sec:
+                                for idx in indices:
+                                    overlay_targets[idx] = group
                         else:
-                            effective_idle = system_idle
-                        if effective_idle >= timeout_sec:
                             for idx in indices:
-                                overlay_targets[idx] = group
-                    else:
-                        for idx in indices:
-                            geom = tuple(all_monitors[idx]["geometry"])
-                            if idle_times.get(geom, 0) >= timeout_sec:
-                                overlay_targets[idx] = group
+                                geom = tuple(all_monitors[idx]["geometry"])
+                                if mode_idle.get(geom, 0) >= timeout_sec:
+                                    overlay_targets[idx] = group
 
-                if overlay_targets:
-                    break
+                    if overlay_targets:
+                        break
 
-                time.sleep(1)
-                new_config = load_config() or {}
-                new_groups = [g for g in new_config.get("setting_groups", []) if isinstance(g, dict) and g.get("enabled", True)]
-                if json.dumps(new_groups, sort_keys=True) != config_dump:
-                    groups = new_groups
-                    config_dump = json.dumps(groups, sort_keys=True)
-                    break
+                    time.sleep(1)
+                    new_sig = _config_file_signature()
+                    if new_sig != last_config_sig:
+                        new_config = load_config() or {}
+                        new_groups = [g for g in new_config.get("setting_groups", []) if isinstance(g, dict) and g.get("enabled", True)]
+                        new_dump = json.dumps(new_groups, sort_keys=True)
+                        if new_dump != config_dump:
+                            groups = new_groups
+                            config_dump = new_dump
+                            last_config_sig = new_sig
+                            break
+                        last_config_sig = new_sig
+            finally:
+                detector.stop()
 
             if not overlay_targets:
                 continue
@@ -582,15 +712,52 @@ def run_background_overlay():
                 proc.start()
 
             logging.info("Overlay(s) started. Waiting for activity to close overlays.")
+            last_meter_tick = time.time()
+            meter_accumulator = 0.0
             while True:
+                # Count time only while at least one overlay process is actively running,
+                # regardless of monitor count or overlay mode.
+                any_overlay_alive = any(proc.is_alive() for proc in overlay_procs)
+                if not any_overlay_alive:
+                    break
+
+                now = time.time()
+                delta = max(0.0, now - last_meter_tick)
+                last_meter_tick = now
+                meter_accumulator += delta
+                consumed_whole_seconds = int(meter_accumulator)
+                if consumed_whole_seconds > 0:
+                    status_after = consume_active_seconds(consumed_whole_seconds)
+                    meter_accumulator -= consumed_whole_seconds
+                    session_overlay_seconds += consumed_whole_seconds
+                    _write_usage_state(
+                        active=True,
+                        active_session_seconds=session_overlay_seconds,
+                        remaining_seconds=status_after.get("remaining_seconds", 0),
+                        lifetime=bool(status_after.get("lifetime", False)),
+                    )
+                    if not status_after.get("can_protect", False):
+                        set_config_paused(True, "license_exhausted")
+                        logging.warning("Protection time reached zero while overlay was active.")
+                        break
+                else:
+                    current_status = get_license_status()
+                    _write_usage_state(
+                        active=True,
+                        active_session_seconds=session_overlay_seconds,
+                        remaining_seconds=current_status.get("remaining_seconds", 0),
+                        lifetime=bool(current_status.get("lifetime", False)),
+                    )
                 if get_idle_duration() < 1:
                     break
                 time.sleep(0.5)
 
+            _write_usage_state(active=False, active_session_seconds=session_overlay_seconds)
             for proc in overlay_procs:
                 if proc.is_alive():
                     proc.terminate()
     finally:
+        _write_usage_state(active=False)
         set_background_lock(False)
 
 # --- GUI Setup ---
@@ -638,8 +805,12 @@ def launch_gui():
 
     win = tk.Tk()
     win.title("Display Control+")
-    win.geometry("1120x780")
-    win.minsize(980, 700)
+    screen_w = max(1024, win.winfo_screenwidth())
+    screen_h = max(768, win.winfo_screenheight())
+    target_w = min(1120, screen_w - 120)
+    target_h = min(860, screen_h - 120)
+    win.geometry(f"{target_w}x{target_h}")
+    win.minsize(980, 720)
     win.configure(bg="#0f1115")
 
     app_dir = app_base_dir()
@@ -729,8 +900,514 @@ def launch_gui():
     win.option_add("*TCombobox*Listbox.selectBackground", "#30c18d")
     win.option_add("*TCombobox*Listbox.selectForeground", "#0a1310")
 
-    root_frame = ttk.Frame(win, padding=(18, 16, 18, 12))
+    root_frame = ttk.Frame(win, padding=(16, 12, 16, 10))
     root_frame.pack(fill=tk.BOTH, expand=True)
+
+    license_status = get_license_status()
+    license_frame = tk.Frame(root_frame, bg="#111a24", bd=1, relief=tk.SOLID, highlightthickness=0)
+    license_frame.pack(fill=tk.X, pady=(0, 10))
+
+    license_title = tk.Label(
+        license_frame,
+        text="Licensing",
+        bg="#111a24",
+        fg="#9fe1c8",
+        font=("Segoe UI", 10, "bold")
+    )
+    license_title.pack(side=tk.LEFT, padx=(10, 8), pady=8)
+
+    license_status_label = tk.Label(
+        license_frame,
+        text="",
+        bg="#111a24",
+        fg="#d4dde9",
+        font=("Segoe UI", 10)
+    )
+    license_status_label.pack(side=tk.LEFT, padx=(0, 14), pady=8)
+
+    recovery_status_label = tk.Label(
+        license_frame,
+        text="",
+        bg="#111a24",
+        fg="#7f91a7",
+        font=("Segoe UI", 9)
+    )
+    recovery_status_label.pack(side=tk.LEFT, padx=(0, 14), pady=8)
+
+    usage_live_label = tk.Label(
+        license_frame,
+        text="",
+        bg="#111a24",
+        fg="#9aa7b7",
+        font=("Segoe UI", 9)
+    )
+    usage_live_label.pack(side=tk.LEFT, padx=(0, 10), pady=8)
+
+    recovery_frame = tk.Frame(root_frame, bg="#111a24", bd=1, relief=tk.SOLID, highlightthickness=0)
+    recovery_frame.pack(fill=tk.X, pady=(0, 10))
+
+    recovery_email_label = tk.Label(
+        recovery_frame,
+        text="Recovery Email: Not set",
+        bg="#111a24",
+        fg="#9aa7b7",
+        font=("Segoe UI", 9)
+    )
+    recovery_email_label.pack(side=tk.LEFT, padx=(10, 8), pady=8)
+
+    recovery_code_var = tk.StringVar(value="No recovery code yet")
+    recovery_code_entry = tk.Entry(
+        recovery_frame,
+        textvariable=recovery_code_var,
+        state="readonly",
+        readonlybackground="#161a22",
+        fg="#d4dde9",
+        bd=0,
+        relief=tk.FLAT,
+        font=("Consolas", 9),
+        width=54
+    )
+    recovery_code_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 8), pady=8)
+
+    def copy_recovery_code():
+        full_code = getattr(copy_recovery_code, "full_code", "")
+        if not full_code:
+            messagebox.showinfo("Display Control+", "No recovery code is available yet.")
+            return
+        win.clipboard_clear()
+        win.clipboard_append(full_code)
+        win.update()
+        messagebox.showinfo("Display Control+", "Recovery code copied to clipboard.")
+
+    copy_recovery_button = tk.Button(
+        recovery_frame,
+        text="Copy",
+        bg="#1f2f3f",
+        fg="#d4dde9",
+        activebackground="#27384b",
+        activeforeground="#f2f7ff",
+        relief=tk.FLAT,
+        cursor="hand2",
+        padx=10,
+        pady=4,
+        command=copy_recovery_code
+    )
+    copy_recovery_button.pack(side=tk.RIGHT, padx=(0, 10), pady=6)
+
+    buy_500_button = tk.Button(
+        license_frame,
+        text="Buy 500h ($5)",
+        bg="#1f2f3f",
+        fg="#d4dde9",
+        activebackground="#27384b",
+        activeforeground="#f2f7ff",
+        relief=tk.FLAT,
+        cursor="hand2",
+        padx=10,
+        pady=4
+    )
+
+    buy_1200_button = tk.Button(
+        license_frame,
+        text="Buy 1200h ($10)",
+        bg="#1f2f3f",
+        fg="#d4dde9",
+        activebackground="#27384b",
+        activeforeground="#f2f7ff",
+        relief=tk.FLAT,
+        cursor="hand2",
+        padx=10,
+        pady=4
+    )
+
+    buy_3000_button = tk.Button(
+        license_frame,
+        text="Buy 3000h ($20)",
+        bg="#2d8f68",
+        fg="#08110e",
+        activebackground="#37a877",
+        activeforeground="#08110e",
+        relief=tk.FLAT,
+        cursor="hand2",
+        padx=10,
+        pady=4
+    )
+
+    def refresh_license_label():
+        def _truncate_code(text, head=10, tail=10):
+            text = str(text or "").strip()
+            if len(text) <= head + tail + 3:
+                return text
+            return f"{text[:head]}...{text[-tail:]}"
+
+        def _fmt_hms(total_seconds):
+            try:
+                total_seconds = max(0, int(total_seconds))
+            except Exception:
+                total_seconds = 0
+            h, rem = divmod(total_seconds, 3600)
+            m, s = divmod(rem, 60)
+            return f"{h:02d}:{m:02d}:{s:02d}"
+
+        status = get_license_status()
+        if status.get("lifetime", False):
+            license_status_label.config(text="Lifetime license active", fg="#73d9b5")
+            buy_500_button.config(state=tk.DISABLED, cursor="arrow")
+            buy_1200_button.config(state=tk.DISABLED, cursor="arrow")
+            buy_3000_button.config(state=tk.DISABLED, cursor="arrow")
+        else:
+            remaining_seconds = status.get("remaining_seconds", 0)
+            if remaining_seconds <= 0:
+                license_status_label.config(text="Time Remaining: 00:00:00 (Protection paused until credits are added)", fg="#ff8b94")
+            else:
+                license_status_label.config(text=f"Time Remaining: {status.get('remaining_display', '00:00:00')}", fg="#d4dde9")
+            buy_500_button.config(state=tk.NORMAL, cursor="hand2")
+            buy_1200_button.config(state=tk.NORMAL, cursor="hand2")
+            buy_3000_button.config(state=tk.NORMAL, cursor="hand2")
+
+        recovery_code = status.get("recovery_code", "")
+        customer_email = status.get("customer_email", "")
+        if customer_email:
+            recovery_email_label.config(text=f"Recovery Email: {customer_email}")
+        else:
+            recovery_email_label.config(text="Recovery Email: Not set")
+
+        if recovery_code:
+            recovery_status_label.config(text="Recovery code ready", fg="#7f91a7")
+            recovery_code_var.set(_truncate_code(recovery_code))
+            copy_recovery_code.full_code = recovery_code
+            copy_recovery_button.config(state=tk.NORMAL, cursor="hand2")
+        else:
+            recovery_status_label.config(text="", fg="#7f91a7")
+            recovery_code_var.set("No recovery code yet")
+            copy_recovery_code.full_code = ""
+            copy_recovery_button.config(state=tk.DISABLED, cursor="arrow")
+
+        usage_state = _read_usage_state()
+        usage_text = _fmt_hms(usage_state.get("active_session_seconds", 0))
+        if usage_state.get("active", False):
+            usage_live_label.config(text=f"Overlay active | Session usage: {usage_text}", fg="#73d9b5")
+        else:
+            usage_live_label.config(text=f"Overlay idle | Session usage: {usage_text}", fg="#9aa7b7")
+
+    def _resume_protection_after_purchase():
+        set_config_paused(False, "")
+
+    def _prompt_purchase_email():
+        """Prompt for email with validation."""
+        while True:
+            email = simpledialog.askstring(
+                "Display Control+",
+                "Enter your email for your receipt and recovery code.\n\nYou'll be sent a recovery code to restore your purchase if needed.",
+                parent=win,
+            )
+            if email is None:
+                return None
+            email = email.strip()
+            if email and "@" in email and "." in email.split("@")[-1]:
+                return email
+            messagebox.showwarning("Display Control+", "Enter a valid email address to continue.")
+
+    def _start_checkout_webview(checkout_url, on_success, on_error=None):
+        """Launch checkout_window.py as a subprocess.
+
+        Opens the Stripe checkout URL inside a native EdgeChromium window
+        (no OS browser).  Calls on_success() once the success redirect is
+        detected, or on_error() if the window is closed without payment.
+        Both callbacks are scheduled on the tkinter main thread via after().
+        """
+        import subprocess as _sp
+
+        helper = os.path.join(os.path.dirname(os.path.abspath(__file__)), "checkout_window.py")
+
+        def _run():
+            try:
+                proc = _sp.run(
+                    [sys.executable, helper, checkout_url],
+                    capture_output=True, text=True, timeout=660,
+                )
+                lines = [l.strip() for l in proc.stdout.strip().splitlines() if l.strip()]
+                data = json.loads(lines[-1]) if lines else {"ok": False, "reason": "no_output"}
+                log_debug(f"Checkout window result: {data}")
+                if data.get("ok"):
+                    win.after(0, on_success)
+                elif on_error:
+                    win.after(0, on_error)
+            except Exception as exc:
+                log_debug(f"Checkout webview subprocess error: {exc}")
+                if on_error:
+                    win.after(0, on_error)
+
+        t = threading.Thread(target=_run, daemon=True)
+        t.start()
+        return t
+
+    def _process_stripe_payment(hours=None, is_lifetime=False):
+        """Process live Stripe payment for hours or lifetime license."""
+        log_debug(f"Starting payment flow: is_lifetime={is_lifetime}, hours={hours}")
+        
+        # Check if user already has a registered email from prior purchase
+        current_status = get_license_status()
+        existing_email = current_status.get("customer_email", "").strip()
+        log_debug(f"Existing email on file: {existing_email if existing_email else '(none)'}")
+        
+        # Start Stripe session with no email (user can enter during checkout)
+        # or with existing email if they have one
+        preauth_email = existing_email if existing_email else ""
+        
+        if is_lifetime:
+            log_debug("Creating lifetime session...")
+            session_result = create_lifetime_session(preauth_email)
+            product_desc = "Lifetime License ($29.99)"
+        else:
+            log_debug(f"Creating {hours}h session...")
+            session_result = create_checkout_session(hours, preauth_email)
+            product_desc = f"{hours} Hours (${5 if hours == 500 else 10 if hours == 1200 else 20})"
+
+        if "error" in session_result:
+            error_msg = session_result['error']
+            log_debug(f"ERROR creating session: {error_msg}")
+            messagebox.showerror(
+                "Payment Error",
+                f"Could not create Stripe checkout: {error_msg}"
+            )
+            return False
+
+        session_id = session_result.get("session_id")
+        checkout_url = session_result.get("url")
+        log_debug(f"Session created: {session_id}")
+        log_debug(f"Checkout URL: {checkout_url}")
+
+        def _finalize_successful_payment(session_conf):
+            recovery_code = session_conf.get("session_id", "unknown")[:16].upper()
+
+            # After payment confirmed, get the email from Stripe session or prompt user.
+            email_from_stripe = session_conf.get("customer_email", "").strip() if session_conf else ""
+            email = email_from_stripe if email_from_stripe else existing_email
+            if not email:
+                email = _prompt_purchase_email()
+                if email is None:
+                    messagebox.showwarning("Recovery Code", "No email provided. You can restore your purchase later using the recovery code.")
+                    email = ""
+
+            try:
+                if is_lifetime:
+                    status = activate_lifetime(email)
+                else:
+                    status = add_hours(hours, email)
+            except Exception as e:
+                messagebox.showerror("License Update Error", f"Could not update license: {str(e)}")
+                return
+
+            recovery_code = status.get("recovery_code", recovery_code)
+            _resume_protection_after_purchase()
+            refresh_license_label()
+
+            plan_label = "Lifetime" if is_lifetime else ({500: "500 Hours", 1200: "1200 Hours", 3000: "3000 Hours"}.get(int(hours or 0), f"{int(hours or 0)} Hours"))
+            email_result = send_recovery_email(email, recovery_code, f"Display Control+ {plan_label}") if email else {"ok": False, "error": "No email"}
+            if email_result.get("ok"):
+                email_line = "Recovery code email sent successfully."
+            else:
+                email_line = f"Email send not completed: {email_result.get('error', 'unknown error')}"
+
+            added_line = "Lifetime access enabled." if is_lifetime else f"Time added: {int(hours or 0)}h"
+            remaining_line = f"Time remaining now: {status.get('remaining_display', '00:00:00')}"
+
+            messagebox.showinfo(
+                "Display Control+",
+                f"Payment successful!\n\n"
+                f"{added_line}\n"
+                f"{remaining_line}\n\n"
+                f"Email: {email}\n"
+                f"Recovery Code: {recovery_code}\n\n"
+                f"{email_line}\n\n"
+                f"Save your recovery code in case you need to restore this purchase after reinstalling."
+            )
+
+        def _confirm_and_finalize(retries_left=4):
+            try:
+                session_confirmation = confirm_session(session_id)
+                if "error" not in session_confirmation and session_confirmation.get("paid"):
+                    _finalize_successful_payment(session_confirmation)
+                    return
+
+                msg = session_confirmation.get("error", "Payment not yet confirmed.")
+                log_debug(f"Checkout success callback not paid yet: {msg}")
+            except Exception as e:
+                msg = str(e)
+                log_debug(f"Checkout success callback confirm exception: {msg}")
+
+            if retries_left > 0:
+                win.after(1500, lambda: _confirm_and_finalize(retries_left - 1))
+            else:
+                messagebox.showinfo(
+                    "Payment Pending",
+                    "Checkout finished, but confirmation is still pending.\n\n"
+                    "If you were charged, your time should appear shortly after confirmation."
+                )
+
+        # Launch the inline checkout window (no browser needed).
+        # Success notification appears only after Stripe confirms payment.
+        _start_checkout_webview(
+            checkout_url,
+            on_success=_confirm_and_finalize,
+            on_error=lambda: log_debug("Checkout window closed without payment"),
+        )
+        return True
+
+    def _confirm_demo_purchase(label, action):
+        ok = messagebox.askyesno(
+            "Display Control+",
+            f"{label}\n\nDemo mode: local purchase simulation (no live payment).\nApply this purchase now?"
+        )
+        if not ok:
+            return
+        email = _prompt_purchase_email()
+        if email is None:
+            return
+        status = action(email)
+        _resume_protection_after_purchase()
+        refresh_license_label()
+        code = status.get("recovery_code", "")
+        email_text = status.get("customer_email", email)
+        plan_label = "3000 Hours" if "3000" in label else ("500 Hours" if "500" in label else "1200 Hours")
+        email_result = send_recovery_email(email_text, code, f"Display Control+ {plan_label}")
+        if email_result.get("ok"):
+            email_line = "Recovery code email sent successfully."
+        else:
+            email_line = f"Email send not completed: {email_result.get('error', 'unknown error')}"
+        messagebox.showinfo(
+            "Display Control+",
+            f"Demo purchase applied to this device.\n\nEmail: {email_text}\nRecovery code: {code}\n\n{email_line}"
+        )
+
+    def open_test_purchase_window():
+        test_win = tk.Toplevel(win)
+        test_win.title("Display Control+ Test Purchases")
+        test_win.geometry("420x230")
+        test_win.configure(bg="#0f1115")
+        test_win.resizable(False, False)
+
+        tk.Label(
+            test_win,
+            text="Test Purchase Tools",
+            bg="#0f1115",
+            fg="#73d9b5",
+            font=("Segoe UI", 12, "bold")
+        ).pack(pady=(16, 8))
+
+        tk.Label(
+            test_win,
+            text="Local-only simulation. No Stripe charge will be created.\nUse this to test hour updates, recovery email flow, and restore behavior.",
+            bg="#0f1115",
+            fg="#d4dde9",
+            font=("Segoe UI", 9),
+            justify="center",
+            wraplength=360
+        ).pack(pady=(0, 14), padx=20)
+
+        tk.Button(
+            test_win,
+            text="Simulate 500h",
+            command=lambda: _confirm_demo_purchase("Add 500 hours for $5", lambda email: add_hours(500, email)),
+            bg="#1f2f3f",
+            fg="#d4dde9",
+            activebackground="#27384b",
+            activeforeground="#f2f7ff",
+            relief=tk.FLAT,
+            cursor="hand2",
+            padx=12,
+            pady=6
+        ).pack(pady=4)
+
+        tk.Button(
+            test_win,
+            text="Simulate 1200h",
+            command=lambda: _confirm_demo_purchase("Add 1200 hours for $10", lambda email: add_hours(1200, email)),
+            bg="#1f2f3f",
+            fg="#d4dde9",
+            activebackground="#27384b",
+            activeforeground="#f2f7ff",
+            relief=tk.FLAT,
+            cursor="hand2",
+            padx=12,
+            pady=6
+        ).pack(pady=4)
+
+        tk.Button(
+            test_win,
+            text="Simulate 3000h",
+            command=lambda: _confirm_demo_purchase("Add 3000 hours for $20", lambda email: add_hours(3000, email)),
+            bg="#2d8f68",
+            fg="#08110e",
+            activebackground="#37a877",
+            activeforeground="#08110e",
+            relief=tk.FLAT,
+            cursor="hand2",
+            padx=12,
+            pady=6
+        ).pack(pady=4)
+
+    def restore_account_from_code():
+        recovery_code = simpledialog.askstring(
+            "Display Control+",
+            "Enter your account/recovery code:",
+            parent=win,
+        )
+        if recovery_code is None:
+            return
+        recovery_code = recovery_code.strip()
+        if not recovery_code:
+            messagebox.showwarning("Display Control+", "Recovery code is required.")
+            return
+
+        email = simpledialog.askstring(
+            "Display Control+",
+            "Enter your purchase email:",
+            parent=win,
+        )
+        email = (email or "").strip()
+        if not email:
+            messagebox.showwarning("Display Control+", "Your purchase email is required to restore this account.")
+            return
+
+        result = restore_account_remote(email, recovery_code)
+        if not result.get("ok", False):
+            result = restore_from_recovery_code(recovery_code, email)
+        if not result.get("ok", False):
+            messagebox.showerror("Display Control+", result.get("error", "Could not restore account."))
+            return
+
+        if result.get("lifetime", False):
+            activate_lifetime(email)
+        else:
+            total_hours = int(result.get("total_hours_purchased", 0) or 0)
+            if total_hours > 0:
+                add_hours(total_hours, email)
+
+        _resume_protection_after_purchase()
+        refresh_license_label()
+        if result.get("already_restored", False):
+            messagebox.showinfo("Display Control+", "This code was already redeemed on this installation.")
+        else:
+            messagebox.showinfo("Display Control+", "Account restored successfully.")
+
+    if is_payment_available():
+        buy_500_button.config(command=lambda: _process_stripe_payment(hours=500, is_lifetime=False))
+        buy_1200_button.config(command=lambda: _process_stripe_payment(hours=1200, is_lifetime=False))
+        buy_3000_button.config(command=lambda: _process_stripe_payment(hours=3000, is_lifetime=False))
+        log_debug("Payment available - using Stripe")
+    else:
+        log_debug("Payment NOT available - using demo mode")
+        buy_500_button.config(command=lambda: _confirm_demo_purchase("Add 500 hours for $5", lambda email: add_hours(500, email)))
+        buy_1200_button.config(command=lambda: _confirm_demo_purchase("Add 1200 hours for $10", lambda email: add_hours(1200, email)))
+        buy_3000_button.config(command=lambda: _confirm_demo_purchase("Add 3000 hours for $20", lambda email: add_hours(3000, email)))
+
+    buy_3000_button.pack(side=tk.RIGHT, padx=(0, 8), pady=6)
+    buy_1200_button.pack(side=tk.RIGHT, padx=(0, 8), pady=6)
+    buy_500_button.pack(side=tk.RIGHT, padx=(0, 8), pady=6)
+
+    refresh_license_label()
 
     header_row = ttk.Frame(root_frame)
     header_row.pack(fill=tk.X, anchor="w")
@@ -796,8 +1473,8 @@ def launch_gui():
         font=("Segoe UI", 8)
     ).pack(side=tk.TOP, anchor="e", pady=(2, 0))
 
-    # Keep bottom alignment stable while moving the card region down slightly.
-    content_spacer = tk.Frame(root_frame, height=10, bg="#0f1115")
+    # Keep a small gap between the header and main content without pushing actions off-screen.
+    content_spacer = tk.Frame(root_frame, height=4, bg="#0f1115")
     content_spacer.pack(fill=tk.X)
 
     content = ttk.Frame(root_frame)
@@ -851,7 +1528,7 @@ def launch_gui():
     interval_label_to_value = {label: value for value, label in interval_options}
     interval_choice = tk.StringVar(value=interval_value_to_label.get(interval_var.get(), "30 sec"))
 
-    left_card = ttk.Labelframe(content, text="Display Layout", style="Card.TLabelframe", padding=(12, 12, 12, 10))
+    left_card = ttk.Labelframe(content, text="Display Layout", style="Card.TLabelframe", padding=(12, 10, 12, 8))
     left_card.grid(row=0, column=0, sticky="nsew", padx=(0, 10), pady=(0, 10))
     left_card.columnconfigure(0, weight=1)
 
@@ -931,7 +1608,7 @@ def launch_gui():
     canvas.bind("<Button-1>", on_canvas_click)
     draw_monitor_map()
 
-    right_card = ttk.Labelframe(content, text="Protection Settings", style="Card.TLabelframe", padding=(14, 12, 14, 10))
+    right_card = ttk.Labelframe(content, text="Protection Settings", style="Card.TLabelframe", padding=(14, 10, 14, 8))
     right_card.grid(row=0, column=1, sticky="nsew", pady=(0, 10))
     right_card.columnconfigure(1, weight=1)
 
@@ -951,7 +1628,7 @@ def launch_gui():
     interval_combo = ttk.Combobox(right_card, state="readonly", textvariable=interval_choice, values=list(interval_label_to_value.keys()), width=16)
     interval_combo.grid(row=2, column=1, sticky="w", pady=(2, 6))
 
-    media_card = ttk.Labelframe(right_card, text="Media Attachments", style="Card.TLabelframe", padding=(12, 10, 12, 10))
+    media_card = ttk.Labelframe(right_card, text="Media Attachments", style="Card.TLabelframe", padding=(12, 8, 12, 8))
     media_card.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(2, 8))
     media_card.columnconfigure(1, weight=1)
 
@@ -984,7 +1661,7 @@ def launch_gui():
     enabled_check = ttk.Checkbutton(right_card, text="Enable background protection", variable=enabled_var)
     enabled_check.grid(row=7, column=0, columnspan=2, sticky="w", pady=(4, 4))
 
-    help_card = ttk.Labelframe(right_card, text="How It Works", style="Card.TLabelframe", padding=(10, 8, 10, 6))
+    help_card = ttk.Labelframe(right_card, text="How It Works", style="Card.TLabelframe", padding=(10, 6, 10, 4))
     help_card.grid(row=8, column=0, columnspan=2, sticky="ew", pady=(8, 0))
     help_card.columnconfigure(1, weight=1)
 
@@ -994,7 +1671,7 @@ def launch_gui():
         ("Slideshow Interval","Time between each image when using Slideshow mode."),
         ("Media Files",       "Required for Image, Slideshow, and Video modes."),
         ("Detection Scope",   "System-wide: whole PC idle. Per-monitor: each screen tracked separately."),
-        ("Detection Mode",    "Input: activates when keyboard/mouse are idle. Activity: stays off while video/media is playing — screen pixel changes are detected, so pausing also resumes the idle timer. Both: only activates when both input AND screen are fully idle."),
+        ("Detection Mode",    "Input: activates when keyboard/mouse are idle. Activity: stays off while video/media is playing â€” screen pixel changes are detected, so pausing also resumes the idle timer. Both: only activates when both input AND screen are fully idle."),
         ("Apply",             "Saves the current settings as a new named protection profile."),
     ]
     for _r, (_label, _desc) in enumerate(_help_rows):
@@ -1013,13 +1690,13 @@ def launch_gui():
             text=_desc,
             bg="#161a22",
             fg="#9aa7b7",
-            font=("Segoe UI", 9),
+            font=("Segoe UI", 8),
             anchor="w",
             justify="left",
-            wraplength=320
+            wraplength=300
         ).grid(row=_r, column=1, sticky="nw", pady=(0, 3))
 
-    settings_list_card = ttk.Labelframe(left_card, text="Applied Settings", style="Card.TLabelframe", padding=(10, 8, 10, 8))
+    settings_list_card = ttk.Labelframe(left_card, text="Applied Settings", style="Card.TLabelframe", padding=(10, 6, 10, 6))
     settings_list_card.grid(row=2, column=0, sticky="ew", pady=(10, 0))
     settings_list_card.columnconfigure(0, weight=1)
 
@@ -1028,6 +1705,12 @@ def launch_gui():
 
     def get_current_payload(setting_name=None):
         selected = [idx for idx, sel in enumerate(monitor_selected) if sel]
+        scope_value = scope_var.get()
+        if scope_value not in ("system", "per-monitor"):
+            scope_value = "system"
+        detection_value = detection_mode_var.get()
+        if detection_value not in ("input", "activity", "both"):
+            detection_value = "input"
         return {
             "name": setting_name or "Setting 1",
             "monitor_indices": selected,
@@ -1036,8 +1719,8 @@ def launch_gui():
             "timeout": timeout_label_to_value.get(timeout_choice.get(), timeout_var.get()),
             "interval": interval_label_to_value.get(interval_choice.get(), interval_var.get()),
             "enabled": bool(enabled_var.get()),
-            "scope": scope_var.get(),
-            "detection_mode": detection_mode_var.get()
+            "scope": scope_value,
+            "detection_mode": detection_value
         }
 
     def next_setting_name():
@@ -1235,6 +1918,15 @@ def launch_gui():
         refresh_upload_summary()
 
     def apply_settings(show_success=True):
+        current_license = get_license_status()
+        if not current_license.get("can_protect", False):
+            messagebox.showwarning(
+                "Display Control+",
+                "You have no protection time remaining. Please purchase credits or lifetime to enable protection."
+            )
+            refresh_license_label()
+            return False
+
         selected = [idx for idx, sel in enumerate(monitor_selected) if sel]
         if not selected:
             messagebox.showwarning("Display Control+", "Select at least one display to protect.")
@@ -1296,15 +1988,21 @@ def launch_gui():
 
         bg_exe_path = _first_existing_path("overlay_bg.exe")
         bg_py_path = _first_existing_path("overlay_bg.py")
-        if os.path.exists(bg_exe_path):
-            tr_cmd = f'"{bg_exe_path}"'
-        else:
-            tr_cmd = f'"{os.path.join(os.path.dirname(sys.executable), "pythonw.exe")}" "{bg_py_path}"'
-            tr_cmd = f'"{tr_cmd}"'
+        pythonw_path = os.path.join(os.path.dirname(sys.executable), "pythonw.exe")
+        if not os.path.exists(pythonw_path):
+            pythonw_path = sys.executable
 
-        task_name = "DisplayControlBackground"
+        # In source/dev runs, always use overlay_bg.py so metering logic stays in sync.
+        use_bg_exe = bool(getattr(sys, "frozen", False) and os.path.exists(bg_exe_path))
+        if use_bg_exe:
+            tr_cmd = f'"{bg_exe_path}"'
+            spawn_cmd = [bg_exe_path]
+        else:
+            tr_cmd = f'"{pythonw_path}" "{bg_py_path}"'
+            spawn_cmd = [pythonw_path, bg_py_path]
+
         create_cmd = (
-            f'SchTasks /Create /F /TN "{task_name}" '
+            f'SchTasks /Create /F /TN "{TASK_NAME}" '
             f'/TR {tr_cmd} '
             '/SC ONLOGON'
         )
@@ -1319,10 +2017,7 @@ def launch_gui():
         # Also spawn background process immediately (don't wait for task scheduler)
         if not is_background_running():
             try:
-                if os.path.exists(bg_exe_path):
-                    subprocess.Popen([bg_exe_path], start_new_session=True, creationflags=subprocess.CREATE_NO_WINDOW)
-                else:
-                    subprocess.Popen([os.path.join(os.path.dirname(sys.executable), "pythonw.exe"), bg_py_path], start_new_session=True, creationflags=subprocess.CREATE_NO_WINDOW)
+                subprocess.Popen(spawn_cmd, start_new_session=True, creationflags=subprocess.CREATE_NO_WINDOW)
                 logging.info("Background process spawned immediately.")
             except Exception as e:
                 logging.warning(f"Could not spawn background process immediately: {e}")
@@ -1333,6 +2028,12 @@ def launch_gui():
         return True
 
     def preview_overlay():
+        current_license = get_license_status()
+        if not current_license.get("can_protect", False):
+            messagebox.showwarning("Display Control+", "Protection preview is unavailable until time is added or a lifetime license is active.")
+            refresh_license_label()
+            return
+
         selected = [idx for idx, sel in enumerate(monitor_selected) if sel]
         if not selected:
             messagebox.showwarning("Display Control+", "Select at least one display for preview.")
@@ -1361,9 +2062,23 @@ def launch_gui():
     ttk.Button(apply_row, text="Apply", style="Accent.TButton", command=apply_settings).pack(side=tk.LEFT)
 
     actions = ttk.Frame(root_frame)
-    actions.pack(fill=tk.X, pady=(8, 0))
+    actions.pack(fill=tk.X, pady=(6, 0))
 
     ttk.Button(actions, text="Preview", command=preview_overlay).pack(side=tk.LEFT)
+    
+    refresh_link = tk.Label(
+        actions,
+        text="Refresh",
+        bg="#0f1115",
+        fg="#73d9b5",
+        cursor="hand2",
+        font=("Segoe UI", 9, "underline")
+    )
+    refresh_link.pack(side=tk.LEFT, padx=(6, 0))
+    def on_refresh_click():
+        log_debug("Refresh button clicked")
+        refresh_license_label()
+    refresh_link.bind("<Button-1>", lambda _e: on_refresh_click())
 
     def apply_and_close():
         if apply_settings(show_success=False):
@@ -1372,9 +2087,28 @@ def launch_gui():
     ttk.Button(actions, text="Save & Close", command=apply_and_close).pack(side=tk.RIGHT)
     ttk.Button(actions, text="Close", command=on_close).pack(side=tk.RIGHT, padx=(8, 0))
 
+    restore_link = tk.Label(
+        actions,
+        text="Restore Account",
+        bg="#0f1115",
+        fg="#73d9b5",
+        cursor="hand2",
+        font=("Segoe UI", 9, "underline")
+    )
+    restore_link.place(relx=0.5, rely=0.5, anchor="center")
+    restore_link.bind("<Button-1>", lambda _e: restore_account_from_code())
+
     mode_var.trace_add("write", update_media_controls)
     update_media_controls()
     refresh_upload_summary()
+    refresh_license_label()
+
+    def schedule_license_refresh():
+        if win.winfo_exists():
+            refresh_license_label()
+            win.after(1000, schedule_license_refresh)
+
+    schedule_license_refresh()
 
     # Check for a newer GitHub release 2 s after the window is ready
     try:
@@ -1397,3 +2131,4 @@ if __name__ == "__main__":
         run_background_overlay()
     else:
         launch_gui()
+

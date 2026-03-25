@@ -1,11 +1,16 @@
 import logging
 import os
+import sys
 import time
 import threading
 from pynput import mouse, keyboard
 
 APPDATA_ROOT = os.environ.get("APPDATA", os.path.expanduser("~"))
-RUNTIME_DIR = os.path.join(APPDATA_ROOT, "KnightLogics", "DisplayControlPlus")
+RUNTIME_PROFILE = os.environ.get(
+    "DISPLAY_CONTROL_RUNTIME_PROFILE",
+    "DisplayControlPlus" if getattr(sys, "frozen", False) else "DisplayControlPlus-DevLocal",
+)
+RUNTIME_DIR = os.path.join(APPDATA_ROOT, "KnightLogics", RUNTIME_PROFILE)
 os.makedirs(RUNTIME_DIR, exist_ok=True)
 LOG_PATH = os.path.join(RUNTIME_DIR, "overlay.log")
 
@@ -28,8 +33,17 @@ class MonitorActivityDetector:
         self.scope = scope
         self.monitor_modes = monitor_modes or {}
         self._idle_times = {"system": 0}
+        self._idle_snapshot = {
+            "input": {"system": 0},
+            "activity": {"system": 0},
+            "both": {"system": 0},
+        }
         for m in monitors:
-            self._idle_times[tuple(m['geometry'])] = 0
+            geom = tuple(m['geometry'])
+            self._idle_times[geom] = 0
+            self._idle_snapshot["input"][geom] = 0
+            self._idle_snapshot["activity"][geom] = 0
+            self._idle_snapshot["both"][geom] = 0
         self._last_input_time = time.time()
         self._last_activity_time = time.time()
         self._running = False
@@ -101,7 +115,7 @@ class MonitorActivityDetector:
         the user-configured timeout. Resuming playback resets the timer immediately.
         """
         try:
-            from PIL import ImageGrab, ImageChops
+            from PIL import ImageGrab, ImageChops, ImageStat
         except ImportError:
             logging.warning("[ACTIVITY] Pillow not available; Activity mode cannot detect screen changes.")
             return
@@ -119,8 +133,7 @@ class MonitorActivityDetector:
                     small = raw.resize(SAMPLE).convert("L")  # grayscale — fast comparison
                     if geom in prev:
                         diff = ImageChops.difference(small, prev[geom])
-                        pixel_data = list(diff.getdata())
-                        mean_diff = sum(pixel_data) / len(pixel_data)
+                        mean_diff = float(ImageStat.Stat(diff).mean[0])
                         if mean_diff > self._ACTIVITY_THRESHOLD:
                             with self._lock:
                                 self._last_activity_time = now
@@ -144,6 +157,11 @@ class MonitorActivityDetector:
             with self._lock:
                 input_idle = now - self._last_input_time
                 activity_idle = now - self._last_activity_time
+                both_idle = min(input_idle, activity_idle)
+
+                self._idle_snapshot["input"]["system"] = input_idle
+                self._idle_snapshot["activity"]["system"] = activity_idle
+                self._idle_snapshot["both"]["system"] = both_idle
 
                 # System-wide idle — mode-aware
                 if self.mode == "input":
@@ -151,19 +169,25 @@ class MonitorActivityDetector:
                 elif self.mode == "activity":
                     self._idle_times["system"] = activity_idle
                 elif self.mode == "both":
-                    self._idle_times["system"] = min(input_idle, activity_idle)
+                    self._idle_times["system"] = both_idle
 
                 # Per-monitor idle — mode-aware, uses per-monitor timestamps
                 for m in self.monitors:
                     geom = tuple(m['geometry'])
                     m_input_idle = now - m.get('last_input_time', self._last_input_time)
                     m_activity_idle = now - m.get('last_activity_time', self._last_activity_time)
+                    m_both_idle = min(m_input_idle, m_activity_idle)
+
+                    self._idle_snapshot["input"][geom] = m_input_idle
+                    self._idle_snapshot["activity"][geom] = m_activity_idle
+                    self._idle_snapshot["both"][geom] = m_both_idle
+
                     if self.mode == "input":
                         self._idle_times[geom] = m_input_idle
                     elif self.mode == "activity":
                         self._idle_times[geom] = m_activity_idle
                     elif self.mode == "both":
-                        self._idle_times[geom] = min(m_input_idle, m_activity_idle)
+                        self._idle_times[geom] = m_both_idle
                     else:
                         self._idle_times[geom] = m_input_idle
 
@@ -177,6 +201,14 @@ class MonitorActivityDetector:
     def get_idle_times(self):
         with self._lock:
             return self._idle_times.copy()
+
+    def get_idle_snapshot(self):
+        with self._lock:
+            return {
+                "input": dict(self._idle_snapshot["input"]),
+                "activity": dict(self._idle_snapshot["activity"]),
+                "both": dict(self._idle_snapshot["both"]),
+            }
 
     def stop(self):
         self._running = False
