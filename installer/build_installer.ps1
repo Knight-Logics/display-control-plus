@@ -108,4 +108,4 @@ Invoke-BuildStep {
 } "Inno Setup build failed."
 
 # Output result
-Write-Host "Build complete! Installer is in $ProjectRoot\DisplayControlSetup_v1.0.11.exe"
+Write-Host "Build complete! Installer is in $ProjectRoot\DisplayControlSetup_v1.0.13.exe"

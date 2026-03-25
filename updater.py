@@ -16,7 +16,7 @@ import time
 import tkinter as tk
 
 # ── Version ──────────────────────────────────────────────────────────────────
-CURRENT_VERSION = "1.0.11"          # bump this string on every release
+CURRENT_VERSION = "1.0.13"          # bump this string on every release
 RELEASES_API    = "https://api.github.com/repos/Knight-Logics/display-control-plus/releases/latest"
 RELEASES_PAGE   = "https://github.com/Knight-Logics/display-control-plus/releases/latest"
 APPDATA_ROOT    = os.environ.get("APPDATA", os.path.expanduser("~"))
@@ -92,6 +92,19 @@ def _should_suppress_prompt(latest_tag: str) -> bool:
 def _select_installer_asset(release_payload: dict) -> tuple[str, str] | tuple[None, None]:
     """Pick the Windows installer asset URL/name from release assets."""
     assets = release_payload.get("assets", [])
+    latest_tag = str(release_payload.get("tag_name", "")).strip().lower().lstrip("v")
+
+    # Prefer an installer that explicitly matches the latest release version.
+    for asset in assets:
+        name = str(asset.get("name", "")).strip()
+        url = str(asset.get("browser_download_url", "")).strip()
+        lname = name.lower()
+        if not url or not (lname.startswith("displaycontrolsetup_") and lname.endswith(".exe")):
+            continue
+        if latest_tag and (f"_{latest_tag}.exe" in lname or f"v{latest_tag}.exe" in lname):
+            return url, name
+
+    # Fallback to any installer-shaped asset if exact versioned name is absent.
     for asset in assets:
         name = str(asset.get("name", "")).strip()
         url = str(asset.get("browser_download_url", "")).strip()
