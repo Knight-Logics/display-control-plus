@@ -5,6 +5,7 @@ import json
 import logging
 import multiprocessing
 import os
+import re
 import sys
 import ctypes
 import threading
@@ -1348,23 +1349,116 @@ def launch_gui():
             pady=6
         ).pack(pady=4)
 
-    def restore_account_from_code():
-        recovery_code = simpledialog.askstring(
-            "Display Control+",
-            "Enter your account/recovery code:",
-            parent=win,
+    def _extract_recovery_code(raw_text):
+        text = str(raw_text or "")
+        text = text.replace("\ufeff", "").replace("\u200b", "")
+        compact = "".join(text.split())
+        if not compact:
+            return ""
+
+        match = re.search(r"DCP2\.[A-Za-z0-9_-]+\.[A-Fa-f0-9]{64}", compact, flags=re.IGNORECASE)
+        if match:
+            return match.group(0)
+        if compact.upper().startswith("DCP2.") and compact.count(".") >= 2:
+            return compact
+        return ""
+
+    def _prompt_recovery_code_dialog():
+        dlg = tk.Toplevel(win)
+        dlg.title("Restore Account")
+        dlg.configure(bg="#0f1115")
+        dlg.resizable(False, False)
+        dlg.transient(win)
+        dlg.grab_set()
+
+        tk.Label(
+            dlg,
+            text="Paste your recovery code or full email text:",
+            bg="#0f1115",
+            fg="#d4dde9",
+            font=("Segoe UI", 10),
+            justify="left",
+            anchor="w"
+        ).pack(fill=tk.X, padx=14, pady=(12, 8))
+
+        txt = tk.Text(
+            dlg,
+            width=72,
+            height=6,
+            bg="#111a24",
+            fg="#d4dde9",
+            insertbackground="#d4dde9",
+            relief=tk.FLAT,
+            padx=8,
+            pady=6,
+            wrap="word",
+            font=("Consolas", 9)
         )
-        if recovery_code is None:
-            return
-        recovery_code = recovery_code.strip()
+        txt.pack(fill=tk.BOTH, expand=True, padx=14, pady=(0, 10))
+        txt.focus_set()
+
+        result = {"code": None}
+
+        def _submit():
+            raw = txt.get("1.0", "end-1c")
+            code = _extract_recovery_code(raw)
+            if not code:
+                messagebox.showwarning(
+                    "Display Control+",
+                    "Could not find a valid recovery code.\n\n"
+                    "Tip: paste the full line starting with DCP2."
+                )
+                return
+            result["code"] = code
+            dlg.destroy()
+
+        def _cancel():
+            dlg.destroy()
+
+        btns = tk.Frame(dlg, bg="#0f1115")
+        btns.pack(fill=tk.X, padx=14, pady=(0, 12))
+
+        tk.Button(
+            btns,
+            text="Cancel",
+            command=_cancel,
+            bg="#3a1519",
+            fg="#ff9098",
+            relief=tk.FLAT,
+            cursor="hand2",
+            padx=10,
+            pady=5
+        ).pack(side=tk.RIGHT)
+
+        tk.Button(
+            btns,
+            text="Restore",
+            command=_submit,
+            bg="#2d8f68",
+            fg="#08110e",
+            activebackground="#37a877",
+            activeforeground="#08110e",
+            relief=tk.FLAT,
+            cursor="hand2",
+            padx=12,
+            pady=5,
+            font=("Segoe UI", 9, "bold")
+        ).pack(side=tk.RIGHT, padx=(0, 8))
+
+        win.wait_window(dlg)
+        return result["code"]
+
+    def restore_account_from_code():
+        recovery_code = _prompt_recovery_code_dialog()
         if not recovery_code:
-            messagebox.showwarning("Display Control+", "Recovery code is required.")
             return
 
+        remembered_email = str(get_license_status().get("customer_email", "")).strip()
         email = simpledialog.askstring(
             "Display Control+",
             "Enter your purchase email:",
             parent=win,
+            initialvalue=remembered_email,
         )
         email = (email or "").strip()
         if not email:

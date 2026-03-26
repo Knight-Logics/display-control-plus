@@ -22,6 +22,7 @@ os.makedirs(RUNTIME_DIR, exist_ok=True)
 LICENSE_PATH = os.path.join(RUNTIME_DIR, "license.json")
 FREE_HOURS = 100
 FREE_SECONDS = FREE_HOURS * 3600
+RECOVERY_SIGNING_SECRET_BAKED = "DisplayControlPlus-Recovery-LocalFallback-CHANGE-ME"
 
 _STATE_LOCK = threading.RLock()
 
@@ -53,11 +54,12 @@ def _b64u_decode(text):
 
 
 def _recovery_signing_secret():
-    # Prefer explicit secret; fall back to Stripe secret when present.
+    # Keep recovery signing stable for packaged installs while still allowing
+    # controlled environment overrides for managed deployments.
     secret = (
-        os.environ.get("RECOVERY_SIGNING_SECRET")
-        or os.environ.get("STRIPE_SECRET_KEY")
-        or "DisplayControlPlus-Recovery-LocalFallback-CHANGE-ME"
+        os.environ.get("RECOVERY_SIGNING_SECRET", "").strip()
+        or os.environ.get("STRIPE_SECRET_KEY", "").strip()
+        or RECOVERY_SIGNING_SECRET_BAKED
     )
     return str(secret).encode("utf-8")
 
@@ -305,11 +307,15 @@ def restore_from_recovery_code(recovery_code, email=""):
     with _STATE_LOCK:
         state = load_or_init_state()
         purchase_history = list(state.get("purchase_history", []))
-        restored_codes = set(state.get("restored_codes", []))
+        restored_codes = {
+            _normalize_recovery_code(code)
+            for code in state.get("restored_codes", [])
+            if _normalize_recovery_code(code)
+        }
 
         match = None
         for record in purchase_history:
-            record_code = str(record.get("recovery_code", "")).strip().upper()
+            record_code = str(record.get("recovery_code", "")).strip()
             record_email = str(record.get("email", "")).strip().lower()
             if record_code != recovery_code:
                 continue

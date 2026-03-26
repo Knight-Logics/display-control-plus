@@ -3,12 +3,12 @@
 
 [Setup]
 AppName=Display Control
-AppVersion=1.0.14
+AppVersion=1.0.16
 DefaultDirName={commonpf64}\Display Control
 DefaultGroupName=Display Control
 UninstallDisplayIcon={app}\DisplayControl.exe
 OutputDir=..
-OutputBaseFilename=DisplayControlSetup_v1.0.14
+OutputBaseFilename=DisplayControlSetup_v1.0.16
 SetupIconFile=..\Display Control+ Logo.ico
 Compression=lzma
 SolidCompression=yes
