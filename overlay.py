@@ -541,9 +541,22 @@ def _collect_overlay_targets(groups, monitors, idle_snapshot):
     return overlay_targets
 
 
-def _collect_wake_targets(groups, monitors, idle_snapshot):
+def _collect_wake_targets(groups, monitors, idle_snapshot, previous_input_idle=None):
     wake_targets = set()
     input_idle = idle_snapshot.get("input", {})
+    previous_input_idle = previous_input_idle or {}
+
+    def _saw_fresh_input(current_idle, previous_idle):
+        if previous_idle is None:
+            return False
+        try:
+            current_idle = float(current_idle)
+            previous_idle = float(previous_idle)
+        except (TypeError, ValueError):
+            return False
+        # A drop in idle time means new input arrived after overlays were shown.
+        return current_idle + 0.25 < previous_idle
+
     for raw_group in groups:
         if not isinstance(raw_group, dict):
             continue
@@ -554,13 +567,13 @@ def _collect_wake_targets(groups, monitors, idle_snapshot):
 
         scope = group.get("scope", "system")
         if scope == "system":
-            if input_idle.get("system", 999999) < 1:
+            if _saw_fresh_input(input_idle.get("system", 999999), previous_input_idle.get("system")):
                 wake_targets.update(indices)
             continue
 
         for idx in indices:
             geometry = _normalize_geometry(monitors[idx].get("geometry"))
-            if geometry is not None and input_idle.get(geometry, 999999) < 1:
+            if geometry is not None and _saw_fresh_input(input_idle.get(geometry, 999999), previous_input_idle.get(geometry)):
                 wake_targets.add(idx)
 
     return wake_targets
@@ -864,6 +877,7 @@ def run_background_overlay():
             meter_accumulator = 0.0
             close_detector = MonitorActivityDetector(all_monitors, mode="input", scope="per-monitor")
             close_detector.start()
+            previous_input_idle = None
             try:
                 while True:
                     overlay_procs = {idx: proc for idx, proc in overlay_procs.items() if proc.is_alive()}
@@ -898,7 +912,9 @@ def run_background_overlay():
                             lifetime=bool(current_status.get("lifetime", False)),
                         )
 
-                    wake_targets = _collect_wake_targets(groups, all_monitors, close_detector.get_idle_snapshot())
+                    close_idle_snapshot = close_detector.get_idle_snapshot()
+                    wake_targets = _collect_wake_targets(groups, all_monitors, close_idle_snapshot, previous_input_idle)
+                    previous_input_idle = dict(close_idle_snapshot.get("input", {}))
                     for idx, proc in list(overlay_procs.items()):
                         if idx in wake_targets:
                             logging.info(f"Input detected for monitor {idx + 1}. Closing overlay.")

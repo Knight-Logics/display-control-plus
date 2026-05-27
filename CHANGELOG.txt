@@ -1,6 +1,10 @@
 Display Control+ Changelog
 =========================
 
+v1.1.1 (2026-05-27)
+- Fixed a wake-detection bug that could immediately close newly started overlays before the short timeout behavior was visible
+- Restored reliable mixed-timeout behavior so a fast center-display profile can coexist with longer side-display profiles
+
 v1.1.0 (2026-05-27)
 - Replaced metered hour-pack billing with a commercial model built around a free trial, annual subscription, and lifetime license
 - Added a hosted licensing server flow for checkout confirmation, recovery-based account restore, entitlement sync, subscription state updates, and billing portal access
