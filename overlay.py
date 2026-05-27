@@ -10,11 +10,13 @@ import sys
 import ctypes
 import threading
 import time
+import tempfile
 import webbrowser
 from PIL import Image, ImageTk
+from billing_catalog import get_plan, plan_button_label
 from monitor_activity import MonitorActivityDetector
-from license_meter import get_status as get_license_status, consume_active_seconds, add_hours, activate_lifetime, restore_from_recovery_code
-from payment_service import is_payment_available, create_checkout_session, create_lifetime_session, confirm_session, open_checkout, send_recovery_email, restore_account_remote
+from license_meter import get_status as get_license_status, consume_active_seconds, add_hours, activate_lifetime, activate_subscription, sync_remote_account, restore_from_recovery_code
+from payment_service import is_payment_available, create_checkout_session, confirm_session, create_portal_session, restore_account_remote
 
 # Debug logging setup
 debug_window = None
@@ -1106,7 +1108,7 @@ def launch_gui():
 
     recovery_email_label = tk.Label(
         recovery_frame,
-        text="Recovery Email: Not set",
+        text="Account Email: Not set",
         bg="#111a24",
         fg="#9aa7b7",
         font=("Segoe UI", 9)
@@ -1150,11 +1152,26 @@ def launch_gui():
         pady=4,
         command=copy_recovery_code
     )
+    manage_billing_button = tk.Button(
+        recovery_frame,
+        text="Manage Billing",
+        bg="#1f2f3f",
+        fg="#d4dde9",
+        activebackground="#27384b",
+        activeforeground="#f2f7ff",
+        relief=tk.FLAT,
+        cursor="arrow",
+        padx=10,
+        pady=4,
+        state=tk.DISABLED,
+        command=lambda: None
+    )
     copy_recovery_button.pack(side=tk.RIGHT, padx=(0, 10), pady=6)
+    manage_billing_button.pack(side=tk.RIGHT, padx=(0, 8), pady=6)
 
-    buy_500_button = tk.Button(
+    buy_annual_button = tk.Button(
         license_frame,
-        text="Buy 500h ($5)",
+        text=plan_button_label("annual"),
         bg="#1f2f3f",
         fg="#d4dde9",
         activebackground="#27384b",
@@ -1165,22 +1182,9 @@ def launch_gui():
         pady=4
     )
 
-    buy_1200_button = tk.Button(
+    buy_lifetime_button = tk.Button(
         license_frame,
-        text="Buy 1200h ($10)",
-        bg="#1f2f3f",
-        fg="#d4dde9",
-        activebackground="#27384b",
-        activeforeground="#f2f7ff",
-        relief=tk.FLAT,
-        cursor="hand2",
-        padx=10,
-        pady=4
-    )
-
-    buy_3000_button = tk.Button(
-        license_frame,
-        text="Buy 3000h ($20)",
+        text=plan_button_label("lifetime"),
         bg="#2d8f68",
         fg="#08110e",
         activebackground="#37a877",
@@ -1208,30 +1212,53 @@ def launch_gui():
             return f"{h:02d}:{m:02d}:{s:02d}"
 
         status = get_license_status()
+        billing_kind = status.get("billing_kind", "none")
+
         if status.get("lifetime", False):
             license_status_label.config(text="Lifetime license active", fg="#73d9b5")
-            buy_500_button.config(state=tk.DISABLED, cursor="arrow")
-            buy_1200_button.config(state=tk.DISABLED, cursor="arrow")
-            buy_3000_button.config(state=tk.DISABLED, cursor="arrow")
-        else:
-            remaining_seconds = status.get("remaining_seconds", 0)
-            if remaining_seconds <= 0:
-                license_status_label.config(text="Time Remaining: 00:00:00 (Protection paused until credits are added)", fg="#ff8b94")
+            buy_annual_button.config(state=tk.DISABLED, cursor="arrow")
+            buy_lifetime_button.config(state=tk.DISABLED, cursor="arrow")
+        elif status.get("subscription_active", False):
+            renewal_text = status.get("subscription_current_period_end_display", "")
+            if status.get("subscription_cancel_at_period_end", False) and renewal_text:
+                descriptor = f"Annual subscription active | Ends {renewal_text}"
+            elif renewal_text:
+                descriptor = f"Annual subscription active | Renews {renewal_text}"
             else:
-                license_status_label.config(text=f"Time Remaining: {status.get('remaining_display', '00:00:00')}", fg="#d4dde9")
-            buy_500_button.config(state=tk.NORMAL, cursor="hand2")
-            buy_1200_button.config(state=tk.NORMAL, cursor="hand2")
-            buy_3000_button.config(state=tk.NORMAL, cursor="hand2")
+                descriptor = "Annual subscription active"
+            license_status_label.config(text=descriptor, fg="#73d9b5")
+            buy_annual_button.config(state=tk.DISABLED, cursor="arrow")
+            buy_lifetime_button.config(state=tk.DISABLED, cursor="arrow")
+        elif status.get("trial_active", False):
+            days_left = int(status.get("trial_days_remaining", 0) or 0)
+            license_status_label.config(text=f"Free trial active | {days_left} day(s) remaining", fg="#d4dde9")
+            buy_annual_button.config(state=tk.NORMAL, cursor="hand2")
+            buy_lifetime_button.config(state=tk.NORMAL, cursor="hand2")
+        elif billing_kind == "legacy_credits":
+            license_status_label.config(text=f"Legacy credits remaining: {status.get('legacy_remaining_display', '00:00:00')}", fg="#d4dde9")
+            buy_annual_button.config(state=tk.NORMAL, cursor="hand2")
+            buy_lifetime_button.config(state=tk.NORMAL, cursor="hand2")
+        else:
+            license_status_label.config(text="No active plan. Start annual or lifetime to enable protection.", fg="#ff8b94")
+            buy_annual_button.config(state=tk.NORMAL, cursor="hand2")
+            buy_lifetime_button.config(state=tk.NORMAL, cursor="hand2")
 
         recovery_code = status.get("recovery_code", "")
         customer_email = status.get("customer_email", "")
         if customer_email:
-            recovery_email_label.config(text=f"Recovery Email: {customer_email}")
+            recovery_email_label.config(text=f"Account Email: {customer_email}")
         else:
-            recovery_email_label.config(text="Recovery Email: Not set")
+            recovery_email_label.config(text="Account Email: Not set")
 
         if recovery_code:
-            recovery_status_label.config(text="Recovery code ready", fg="#7f91a7")
+            if status.get("subscription_active", False):
+                recovery_status_label.config(text=f"Billing status: {status.get('subscription_status', 'active')}", fg="#7f91a7")
+            elif status.get("trial_active", False):
+                recovery_status_label.config(text="Recovery code ready for cross-device restore", fg="#7f91a7")
+            elif billing_kind == "legacy_credits":
+                recovery_status_label.config(text="Legacy entitlement detected", fg="#7f91a7")
+            else:
+                recovery_status_label.config(text="Recovery code ready", fg="#7f91a7")
             recovery_code_var.set(_truncate_code(recovery_code))
             copy_recovery_code.full_code = recovery_code
             copy_recovery_button.config(state=tk.NORMAL, cursor="hand2")
@@ -1240,6 +1267,11 @@ def launch_gui():
             recovery_code_var.set("No recovery code yet")
             copy_recovery_code.full_code = ""
             copy_recovery_button.config(state=tk.DISABLED, cursor="arrow")
+
+        if is_payment_available() and customer_email and recovery_code:
+            manage_billing_button.config(state=tk.NORMAL, cursor="hand2")
+        else:
+            manage_billing_button.config(state=tk.DISABLED, cursor="arrow")
 
         usage_state = _read_usage_state()
         usage_text = _fmt_hms(usage_state.get("active_session_seconds", 0))
@@ -1256,7 +1288,7 @@ def launch_gui():
         while True:
             email = simpledialog.askstring(
                 "Display Control+",
-                "Enter your email for your receipt and recovery code.\n\nYou'll be sent a recovery code to restore your purchase if needed.",
+                "Enter your billing email.\n\nThis email is used for receipts, restores, subscription sync, and billing management.",
                 parent=win,
             )
             if email is None:
@@ -1276,16 +1308,33 @@ def launch_gui():
         """
         import subprocess as _sp
 
-        helper = os.path.join(os.path.dirname(os.path.abspath(__file__)), "checkout_window.py")
+        helper_script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "checkout_window.py")
+        helper_exe = _first_existing_path("checkout_window.exe") if getattr(sys, "frozen", False) else ""
 
         def _run():
+            result_path = None
             try:
-                proc = _sp.run(
-                    [sys.executable, helper, checkout_url],
-                    capture_output=True, text=True, timeout=660,
-                )
-                lines = [l.strip() for l in proc.stdout.strip().splitlines() if l.strip()]
-                data = json.loads(lines[-1]) if lines else {"ok": False, "reason": "no_output"}
+                fd, result_path = tempfile.mkstemp(prefix="dcp_checkout_", suffix=".json")
+                os.close(fd)
+
+                if helper_exe and os.path.exists(helper_exe):
+                    cmd = [helper_exe, checkout_url, result_path]
+                else:
+                    cmd = [sys.executable, helper_script, checkout_url, result_path]
+
+                proc = _sp.run(cmd, capture_output=True, text=True, timeout=660)
+                data = None
+                if result_path and os.path.exists(result_path):
+                    try:
+                        with open(result_path, "r", encoding="utf-8") as fh:
+                            data = json.load(fh)
+                    except Exception as read_exc:
+                        log_debug(f"Checkout helper result file read error: {read_exc}")
+
+                if data is None:
+                    lines = [l.strip() for l in proc.stdout.strip().splitlines() if l.strip()]
+                    data = json.loads(lines[-1]) if lines else {"ok": False, "reason": "no_output"}
+
                 log_debug(f"Checkout window result: {data}")
                 if data.get("ok"):
                     win.after(0, on_success)
@@ -1295,39 +1344,81 @@ def launch_gui():
                 log_debug(f"Checkout webview subprocess error: {exc}")
                 if on_error:
                     win.after(0, on_error)
+            finally:
+                if result_path and os.path.exists(result_path):
+                    try:
+                        os.remove(result_path)
+                    except Exception:
+                        pass
 
         t = threading.Thread(target=_run, daemon=True)
         t.start()
         return t
 
-    def _process_stripe_payment(hours=None, is_lifetime=False):
-        """Process live Stripe payment for hours or lifetime license."""
-        log_debug(f"Starting payment flow: is_lifetime={is_lifetime}, hours={hours}")
-        
-        # Check if user already has a registered email from prior purchase
+    def _sync_current_account_state(show_feedback=False):
         current_status = get_license_status()
-        existing_email = current_status.get("customer_email", "").strip()
-        log_debug(f"Existing email on file: {existing_email if existing_email else '(none)'}")
-        
-        # Start Stripe session with no email (user can enter during checkout)
-        # or with existing email if they have one
-        preauth_email = existing_email if existing_email else ""
-        
-        if is_lifetime:
-            log_debug("Creating lifetime session...")
-            session_result = create_lifetime_session(preauth_email)
-            product_desc = "Lifetime License ($29.99)"
-        else:
-            log_debug(f"Creating {hours}h session...")
-            session_result = create_checkout_session(hours, preauth_email)
-            product_desc = f"{hours} Hours (${5 if hours == 500 else 10 if hours == 1200 else 20})"
+        email = str(current_status.get("customer_email", "")).strip()
+        recovery_code = str(current_status.get("recovery_code", "")).strip()
+        if not is_payment_available():
+            if show_feedback:
+                messagebox.showwarning("Display Control+", "Hosted billing is not configured for this build.")
+            return False
+        if not email or not recovery_code:
+            if show_feedback:
+                messagebox.showwarning("Display Control+", "A billing email and recovery code are required before account sync is available.")
+            return False
 
-        if "error" in session_result:
-            error_msg = session_result['error']
+        log_debug(f"Syncing account state for {email}")
+        result = restore_account_remote(email, recovery_code)
+        if not result.get("ok", False):
+            log_debug(f"Account sync failed: {result.get('error', 'unknown error')}")
+            if show_feedback:
+                messagebox.showerror("Display Control+", result.get("error", "Could not sync account state."))
+            return False
+
+        sync_remote_account(result, recovery_code)
+        refresh_license_label()
+        if show_feedback:
+            messagebox.showinfo("Display Control+", "Account state refreshed from the billing server.")
+        return True
+
+    def _schedule_initial_account_sync():
+        current_status = get_license_status()
+        email = str(current_status.get("customer_email", "")).strip()
+        recovery_code = str(current_status.get("recovery_code", "")).strip()
+        if not (is_payment_available() and email and recovery_code):
+            return
+
+        def _worker():
+            result = restore_account_remote(email, recovery_code)
+            if not result.get("ok", False):
+                log_debug(f"Initial account sync skipped: {result.get('error', 'unknown error')}")
+                return
+            def _apply_sync():
+                sync_remote_account(result, recovery_code)
+                refresh_license_label()
+            win.after(0, _apply_sync)
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _process_checkout(plan_key):
+        """Process a live hosted checkout for annual or lifetime licensing."""
+        plan = get_plan(plan_key) or {}
+        log_debug(f"Starting payment flow for plan={plan_key}")
+
+        current_status = get_license_status()
+        existing_email = str(current_status.get("customer_email", "")).strip()
+        preauth_email = existing_email if existing_email else _prompt_purchase_email()
+        if preauth_email is None:
+            return False
+
+        session_result = create_checkout_session(plan_key, preauth_email)
+        if not session_result.get("ok", False):
+            error_msg = session_result.get("error", "Unknown checkout creation error")
             log_debug(f"ERROR creating session: {error_msg}")
             messagebox.showerror(
                 "Payment Error",
-                f"Could not create Stripe checkout: {error_msg}"
+                f"Could not create checkout session: {error_msg}"
             )
             return False
 
@@ -1337,55 +1428,49 @@ def launch_gui():
         log_debug(f"Checkout URL: {checkout_url}")
 
         def _finalize_successful_payment(session_conf):
-            recovery_code = session_conf.get("session_id", "unknown")[:16].upper()
-
-            # After payment confirmed, get the email from Stripe session or prompt user.
-            email_from_stripe = session_conf.get("customer_email", "").strip() if session_conf else ""
-            email = email_from_stripe if email_from_stripe else existing_email
-            if not email:
-                email = _prompt_purchase_email()
-                if email is None:
-                    messagebox.showwarning("Recovery Code", "No email provided. You can restore your purchase later using the recovery code.")
-                    email = ""
-
-            try:
-                if is_lifetime:
-                    status = activate_lifetime(email)
-                else:
-                    status = add_hours(hours, email)
-            except Exception as e:
-                messagebox.showerror("License Update Error", f"Could not update license: {str(e)}")
+            account_payload = session_conf.get("account", {}) if isinstance(session_conf, dict) else {}
+            if not account_payload:
+                messagebox.showerror("License Update Error", "Payment completed, but no account entitlement payload was returned.")
                 return
 
-            recovery_code = status.get("recovery_code", recovery_code)
+            status = sync_remote_account(account_payload, account_payload.get("recovery_code", ""))
             _resume_protection_after_purchase()
             refresh_license_label()
 
-            plan_label = "Lifetime" if is_lifetime else ({500: "500 Hours", 1200: "1200 Hours", 3000: "3000 Hours"}.get(int(hours or 0), f"{int(hours or 0)} Hours"))
-            email_result = send_recovery_email(email, recovery_code, f"Display Control+ {plan_label}") if email else {"ok": False, "error": "No email"}
-            if email_result.get("ok"):
-                email_line = "Recovery code email sent successfully."
+            if status.get("lifetime", False):
+                plan_line = "Lifetime access enabled."
+            elif status.get("subscription_active", False):
+                renewal_text = status.get("subscription_current_period_end_display", "")
+                if renewal_text:
+                    if status.get("subscription_cancel_at_period_end", False):
+                        plan_line = f"Annual subscription active. Access continues through {renewal_text}."
+                    else:
+                        plan_line = f"Annual subscription active. Next renewal: {renewal_text}."
+                else:
+                    plan_line = "Annual subscription active."
             else:
-                email_line = f"Email send not completed: {email_result.get('error', 'unknown error')}"
+                plan_line = f"Entitlement synced: {plan.get('short_label', plan_key.title())}."
 
-            added_line = "Lifetime access enabled." if is_lifetime else f"Time added: {int(hours or 0)}h"
-            remaining_line = f"Time remaining now: {status.get('remaining_display', '00:00:00')}"
+            if session_conf.get("email_sent", False):
+                email_line = "Recovery email sent successfully."
+            else:
+                email_error = session_conf.get("email_error", "billing server did not confirm email delivery")
+                email_line = f"Recovery email not confirmed: {email_error}"
 
             messagebox.showinfo(
                 "Display Control+",
                 f"Payment successful!\n\n"
-                f"{added_line}\n"
-                f"{remaining_line}\n\n"
-                f"Email: {email}\n"
-                f"Recovery Code: {recovery_code}\n\n"
+                f"{plan_line}\n\n"
+                f"Email: {status.get('customer_email', '')}\n"
+                f"Recovery Code: {status.get('recovery_code', '')}\n\n"
                 f"{email_line}\n\n"
-                f"Save your recovery code in case you need to restore this purchase after reinstalling."
+                f"Use Restore Account on another machine to sync your entitlements, or Manage Billing to update your subscription."
             )
 
         def _confirm_and_finalize(retries_left=4):
             try:
                 session_confirmation = confirm_session(session_id)
-                if "error" not in session_confirmation and session_confirmation.get("paid"):
+                if session_confirmation.get("ok", False):
                     _finalize_successful_payment(session_confirmation)
                     return
 
@@ -1426,17 +1511,9 @@ def launch_gui():
         status = action(email)
         _resume_protection_after_purchase()
         refresh_license_label()
-        code = status.get("recovery_code", "")
-        email_text = status.get("customer_email", email)
-        plan_label = "3000 Hours" if "3000" in label else ("500 Hours" if "500" in label else "1200 Hours")
-        email_result = send_recovery_email(email_text, code, f"Display Control+ {plan_label}")
-        if email_result.get("ok"):
-            email_line = "Recovery code email sent successfully."
-        else:
-            email_line = f"Email send not completed: {email_result.get('error', 'unknown error')}"
         messagebox.showinfo(
             "Display Control+",
-            f"Demo purchase applied to this device.\n\nEmail: {email_text}\nRecovery code: {code}\n\n{email_line}"
+            f"Demo entitlement applied to this device.\n\nEmail: {status.get('customer_email', email)}\nRecovery code: {status.get('recovery_code', '')}"
         )
 
     def open_test_purchase_window():
@@ -1456,7 +1533,7 @@ def launch_gui():
 
         tk.Label(
             test_win,
-            text="Local-only simulation. No Stripe charge will be created.\nUse this to test hour updates, recovery email flow, and restore behavior.",
+            text="Local-only simulation. No live charge will be created.\nUse this to test annual/lifetime entitlement behavior and restore flows.",
             bg="#0f1115",
             fg="#d4dde9",
             font=("Segoe UI", 9),
@@ -1466,8 +1543,11 @@ def launch_gui():
 
         tk.Button(
             test_win,
-            text="Simulate 500h",
-            command=lambda: _confirm_demo_purchase("Add 500 hours for $5", lambda email: add_hours(500, email)),
+            text="Simulate Annual",
+            command=lambda: _confirm_demo_purchase(
+                "Start annual subscription demo",
+                lambda email: activate_subscription(email, plan_key="annual", current_period_end=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + 31536000))),
+            ),
             bg="#1f2f3f",
             fg="#d4dde9",
             activebackground="#27384b",
@@ -1480,8 +1560,8 @@ def launch_gui():
 
         tk.Button(
             test_win,
-            text="Simulate 1200h",
-            command=lambda: _confirm_demo_purchase("Add 1200 hours for $10", lambda email: add_hours(1200, email)),
+            text="Simulate Lifetime",
+            command=lambda: _confirm_demo_purchase("Grant lifetime demo entitlement", lambda email: activate_lifetime(email)),
             bg="#1f2f3f",
             fg="#d4dde9",
             activebackground="#27384b",
@@ -1494,8 +1574,8 @@ def launch_gui():
 
         tk.Button(
             test_win,
-            text="Simulate 3000h",
-            command=lambda: _confirm_demo_purchase("Add 3000 hours for $20", lambda email: add_hours(3000, email)),
+            text="Add Legacy Credits",
+            command=lambda: _confirm_demo_purchase("Add legacy credit balance", lambda email: add_hours(1200, email)),
             bg="#2d8f68",
             fg="#08110e",
             activebackground="#37a877",
@@ -1512,6 +1592,10 @@ def launch_gui():
         compact = "".join(text.split())
         if not compact:
             return ""
+
+        match = re.search(r"DCPA-[A-F0-9]{16}", compact, flags=re.IGNORECASE)
+        if match:
+            return match.group(0).upper()
 
         match = re.search(r"DCP2\.[A-Za-z0-9_-]+\.[A-Fa-f0-9]{64}", compact, flags=re.IGNORECASE)
         if match:
@@ -1563,7 +1647,7 @@ def launch_gui():
                 messagebox.showwarning(
                     "Display Control+",
                     "Could not find a valid recovery code.\n\n"
-                    "Tip: paste the full line starting with DCP2."
+                    "Tip: paste the recovery code directly or the full email text that contains it."
                 )
                 return
             result["code"] = code
@@ -1623,18 +1707,13 @@ def launch_gui():
             return
 
         result = restore_account_remote(email, recovery_code)
-        if not result.get("ok", False):
+        if result.get("ok", False):
+            sync_remote_account(result, recovery_code)
+        else:
             result = restore_from_recovery_code(recovery_code, email)
         if not result.get("ok", False):
             messagebox.showerror("Display Control+", result.get("error", "Could not restore account."))
             return
-
-        if result.get("lifetime", False):
-            activate_lifetime(email)
-        else:
-            total_hours = int(result.get("total_hours_purchased", 0) or 0)
-            if total_hours > 0:
-                add_hours(total_hours, email)
 
         _resume_protection_after_purchase()
         refresh_license_label()
@@ -1643,22 +1722,51 @@ def launch_gui():
         else:
             messagebox.showinfo("Display Control+", "Account restored successfully.")
 
+    def manage_billing():
+        if not is_payment_available():
+            messagebox.showwarning("Display Control+", "Hosted billing is not configured for this build.")
+            return
+
+        current_status = get_license_status()
+        email = str(current_status.get("customer_email", "")).strip()
+        recovery_code = str(current_status.get("recovery_code", "")).strip()
+        if not email:
+            email = simpledialog.askstring("Display Control+", "Enter your billing email:", parent=win) or ""
+            email = email.strip()
+        if not recovery_code:
+            recovery_code = _prompt_recovery_code_dialog() or ""
+        if not email or not recovery_code:
+            return
+
+        result = create_portal_session(email, recovery_code)
+        if not result.get("ok", False):
+            messagebox.showerror("Display Control+", result.get("error", "Could not open billing portal."))
+            return
+
+        if not webbrowser.open(result.get("url", "")):
+            messagebox.showerror("Display Control+", "Could not open the billing portal in your browser.")
+
+    manage_billing_button.config(command=manage_billing)
+
     if is_payment_available():
-        buy_500_button.config(command=lambda: _process_stripe_payment(hours=500, is_lifetime=False))
-        buy_1200_button.config(command=lambda: _process_stripe_payment(hours=1200, is_lifetime=False))
-        buy_3000_button.config(command=lambda: _process_stripe_payment(hours=3000, is_lifetime=False))
-        log_debug("Payment available - using Stripe")
+        buy_annual_button.config(command=lambda: _process_checkout("annual"))
+        buy_lifetime_button.config(command=lambda: _process_checkout("lifetime"))
+        log_debug("Hosted billing available - using license server")
     else:
         log_debug("Payment NOT available - using demo mode")
-        buy_500_button.config(command=lambda: _confirm_demo_purchase("Add 500 hours for $5", lambda email: add_hours(500, email)))
-        buy_1200_button.config(command=lambda: _confirm_demo_purchase("Add 1200 hours for $10", lambda email: add_hours(1200, email)))
-        buy_3000_button.config(command=lambda: _confirm_demo_purchase("Add 3000 hours for $20", lambda email: add_hours(3000, email)))
+        buy_annual_button.config(
+            command=lambda: _confirm_demo_purchase(
+                "Start annual subscription demo",
+                lambda email: activate_subscription(email, plan_key="annual", current_period_end=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + 31536000))),
+            )
+        )
+        buy_lifetime_button.config(command=lambda: _confirm_demo_purchase("Grant lifetime demo entitlement", lambda email: activate_lifetime(email)))
 
-    buy_3000_button.pack(side=tk.RIGHT, padx=(0, 8), pady=6)
-    buy_1200_button.pack(side=tk.RIGHT, padx=(0, 8), pady=6)
-    buy_500_button.pack(side=tk.RIGHT, padx=(0, 8), pady=6)
+    buy_lifetime_button.pack(side=tk.RIGHT, padx=(0, 8), pady=6)
+    buy_annual_button.pack(side=tk.RIGHT, padx=(0, 8), pady=6)
 
     refresh_license_label()
+    _schedule_initial_account_sync()
 
     header_row = ttk.Frame(root_frame)
     header_row.pack(fill=tk.X, anchor="w")
@@ -1997,6 +2105,21 @@ def launch_gui():
                 return candidate
             idx += 1
 
+    last_applied_form_snapshot = {"value": None}
+
+    def _build_form_state_snapshot():
+        payload = get_current_payload(setting_name="")
+        payload["name"] = ""
+        return json.dumps(payload, sort_keys=True)
+
+    def _mark_form_applied():
+        last_applied_form_snapshot["value"] = _build_form_state_snapshot()
+
+    def _form_has_unapplied_changes():
+        return _build_form_state_snapshot() != last_applied_form_snapshot.get("value")
+
+    _mark_form_applied()
+
     def remove_setting_group(group_name):
         keep = [g for g in setting_groups if g.get("name") != group_name]
         if len(keep) == len(setting_groups):
@@ -2249,6 +2372,7 @@ def launch_gui():
             setting_groups,
             paused=False
         )
+        _mark_form_applied()
         logging.info("Settings applied from GUI.")
 
         bg_exe_path = _first_existing_path("overlay_bg.exe")
@@ -2346,8 +2470,9 @@ def launch_gui():
     refresh_link.bind("<Button-1>", lambda _e: on_refresh_click())
 
     def apply_and_close():
-        if apply_settings(show_success=False):
-            win.destroy()
+        if _form_has_unapplied_changes() and not apply_settings(show_success=False):
+            return
+        win.destroy()
 
     ttk.Button(actions, text="Save & Close", command=apply_and_close).pack(side=tk.RIGHT)
     ttk.Button(actions, text="Close", command=on_close).pack(side=tk.RIGHT, padx=(8, 0))

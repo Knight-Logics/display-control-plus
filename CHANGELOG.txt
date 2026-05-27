@@ -1,6 +1,14 @@
 Display Control+ Changelog
 =========================
 
+v1.1.0 (2026-05-27)
+- Replaced metered hour-pack billing with a commercial model built around a free trial, annual subscription, and lifetime license
+- Added a hosted licensing server flow for checkout confirmation, recovery-based account restore, entitlement sync, subscription state updates, and billing portal access
+- Updated the dashboard licensing UI to show account-style entitlements instead of usage-credit packs
+- Preserved legacy local credit balances for existing installs while stopping new sales from depending on local hour metering
+- Added automated billing tests covering checkout, restore, billing portal, webhook subscription cancellation, local entitlement sync, and localhost client/server round-trips
+- Fixed packaged checkout flow by shipping a dedicated checkout helper executable instead of relying on a source-only helper script
+
 v1.0.17 (2026-05-27)
 - Fixed monitor selection drift by resolving saved displays using stable device and geometry identity instead of raw enumeration order alone
 - Fixed overlay wake behavior so covered displays close on real user input without relying on a second activity-capture pass over blacked-out screens

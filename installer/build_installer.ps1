@@ -1,5 +1,5 @@
 # PowerShell script to build and package Display Control+
-# 1. Build DisplayControl.exe, tray.exe, and overlay_bg.exe with PyInstaller
+# 1. Build DisplayControl.exe, tray.exe, overlay_bg.exe, and checkout_window.exe with PyInstaller
 # 2. Build installer with Inno Setup
 # 3. Output ready-to-distribute installer
 
@@ -18,7 +18,7 @@ if (-not (Test-Path $projectPython)) {
 # Step 0: Generate/refresh the .ico from the PNG
 $icoPath = "$ProjectRoot\Display Control+ Logo.ico"
 $pngPath = "$ProjectRoot\Display Control+ Logo.png"
-Write-Host "[0/5] Generating ICO from PNG..."
+Write-Host "[0/6] Generating ICO from PNG..."
 & $projectPython -c "
 from PIL import Image, ImageFilter, ImageOps
 img = Image.open(r'$pngPath').convert('RGBA')
@@ -53,31 +53,38 @@ function Invoke-BuildStep {
 }
 
 # Step 1: Build GUI executable
-Write-Host "[1/5] Building DisplayControl.exe..."
+Write-Host "[1/6] Building DisplayControl.exe..."
 Push-Location $ProjectRoot
 Invoke-BuildStep {
     & $projectPython -m PyInstaller --noconfirm --clean --onefile --windowed --name "DisplayControl" $iconArg --distpath "$ProjectRoot\dist" "$ProjectRoot\main.py"
 } "DisplayControl build failed."
 
 # Step 2: Build tray executable
-Write-Host "[2/5] Building tray.exe..."
+Write-Host "[2/6] Building tray.exe..."
 Invoke-BuildStep {
     & $projectPython -m PyInstaller --noconfirm --clean --onefile --windowed --name "tray" $iconArg --distpath "$ProjectRoot\dist" "$ProjectRoot\tray.py"
 } "tray build failed."
 
 # Step 3: Build background executable
-Write-Host "[3/5] Building overlay_bg.exe..."
+Write-Host "[3/6] Building overlay_bg.exe..."
 Invoke-BuildStep {
     & $projectPython -m PyInstaller --noconfirm --clean --onefile --windowed --name "overlay_bg" $iconArg --distpath "$ProjectRoot\dist" "$ProjectRoot\overlay_bg.py"
 } "overlay_bg build failed."
+
+# Step 4: Build checkout helper executable
+Write-Host "[4/6] Building checkout_window.exe..."
+Invoke-BuildStep {
+    & $projectPython -m PyInstaller --noconfirm --clean --onefile --windowed --name "checkout_window" $iconArg --distpath "$ProjectRoot\dist" "$ProjectRoot\checkout_window.py"
+} "checkout_window build failed."
 Pop-Location
 
-# Step 4: Validate core artifacts exist
-Write-Host "[4/5] Validating build artifacts..."
+# Step 5: Validate core artifacts exist
+Write-Host "[5/6] Validating build artifacts..."
 $required = @(
     "$ProjectRoot\dist\DisplayControl.exe",
     "$ProjectRoot\dist\tray.exe",
-    "$ProjectRoot\dist\overlay_bg.exe"
+    "$ProjectRoot\dist\overlay_bg.exe",
+    "$ProjectRoot\dist\checkout_window.exe"
 )
 foreach ($artifact in $required) {
     if (-not (Test-Path $artifact)) {
@@ -86,8 +93,8 @@ foreach ($artifact in $required) {
     }
 }
 
-# Step 5: Build installer with Inno Setup
-Write-Host "[5/5] Building installer with Inno Setup..."
+# Step 6: Build installer with Inno Setup
+Write-Host "[6/6] Building installer with Inno Setup..."
 $innoSetup = "ISCC.exe"
 $innoCandidates = @(
     "C:\Program Files (x86)\Inno Setup 6\ISCC.exe",
@@ -108,4 +115,4 @@ Invoke-BuildStep {
 } "Inno Setup build failed."
 
 # Output result
-Write-Host "Build complete! Installer is in $ProjectRoot\DisplayControlSetup_v1.0.17.exe"
+Write-Host "Build complete! Installer is in $ProjectRoot\DisplayControlSetup_v1.1.0.exe"

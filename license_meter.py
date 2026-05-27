@@ -5,11 +5,15 @@ import hmac
 import json
 import os
 import platform
+import re
 import secrets
 import sys
 import threading
 import time
-import re
+from datetime import datetime, timezone
+
+from billing_catalog import TRIAL_DAYS
+
 
 APPDATA_ROOT = os.environ.get("APPDATA", os.path.expanduser("~"))
 RUNTIME_PROFILE = os.environ.get(
@@ -20,9 +24,8 @@ RUNTIME_DIR = os.path.join(APPDATA_ROOT, "KnightLogics", RUNTIME_PROFILE)
 os.makedirs(RUNTIME_DIR, exist_ok=True)
 
 LICENSE_PATH = os.path.join(RUNTIME_DIR, "license.json")
-FREE_HOURS = 100
-FREE_SECONDS = FREE_HOURS * 3600
 RECOVERY_SIGNING_SECRET_BAKED = "DisplayControlPlus-Recovery-LocalFallback-CHANGE-ME"
+ACTIVE_SUBSCRIPTION_STATUSES = {"active", "trialing", "past_due"}
 
 _STATE_LOCK = threading.RLock()
 
@@ -38,7 +41,7 @@ def _machine_fingerprint():
 
 
 def _sign_payload(payload):
-    key = hashlib.sha256(("KnightLogics.DisplayControlPlus.v1|" + _machine_fingerprint()).encode("utf-8")).digest()
+    key = hashlib.sha256(("KnightLogics.DisplayControlPlus.v2|" + _machine_fingerprint()).encode("utf-8")).digest()
     normalized = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hmac.new(key, normalized, hashlib.sha256).hexdigest()
 
@@ -54,22 +57,11 @@ def _b64u_decode(text):
 
 
 def _recovery_signing_secret():
-    # Keep recovery signing stable for packaged installs while still allowing
-    # controlled environment overrides for managed deployments.
-    secret = (
-        os.environ.get("RECOVERY_SIGNING_SECRET", "").strip()
-        or os.environ.get("STRIPE_SECRET_KEY", "").strip()
-        or RECOVERY_SIGNING_SECRET_BAKED
-    )
+    secret = os.environ.get("RECOVERY_SIGNING_SECRET", "").strip() or RECOVERY_SIGNING_SECRET_BAKED
     return str(secret).encode("utf-8")
 
 
 def _normalize_recovery_code(recovery_code):
-    """Normalize pasted recovery codes from email clients.
-
-    Some clients insert hidden whitespace/newlines when wrapping very long
-    tokens. Remove those artifacts before parsing.
-    """
     code = str(recovery_code or "")
     code = code.replace("\ufeff", "").replace("\u200b", "")
     code = re.sub(r"\s+", "", code)
@@ -118,22 +110,95 @@ def _parse_recovery_token(recovery_code):
     return payload
 
 
+def _iso_to_epoch(value):
+    text = str(value or "").strip()
+    if not text:
+        return 0
+    try:
+        return int(datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp())
+    except Exception:
+        return 0
+
+
+def _format_date(value):
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    try:
+        dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        return dt.astimezone(timezone.utc).strftime("%Y-%m-%d")
+    except Exception:
+        return text
+
+
 def _new_state():
     now = int(time.time())
     base = {
-        "version": 1,
-        "remaining_seconds": int(FREE_SECONDS),
+        "version": 2,
+        "legacy_remaining_seconds": 0,
+        "legacy_used_seconds": 0,
         "lifetime": False,
-        "used_seconds": 0,
         "customer_email": "",
         "recovery_code": "",
+        "customer_id": "",
+        "subscription_id": "",
+        "subscription_status": "inactive",
+        "subscription_current_period_end": "",
+        "subscription_cancel_at_period_end": False,
+        "trial_started_at": now,
+        "trial_ends_at": now + (TRIAL_DAYS * 86400),
         "purchase_history": [],
         "restored_codes": [],
         "created_at": now,
         "updated_at": now,
+        "last_synced_at": 0,
     }
     base["signature"] = _sign_payload({k: v for k, v in base.items() if k != "signature"})
     return base
+
+
+def _migrate_state(state):
+    if int(state.get("version", 1) or 1) >= 2:
+        migrated = dict(state)
+        now = int(time.time())
+        migrated.setdefault("legacy_remaining_seconds", max(0, int(migrated.get("legacy_remaining_seconds", 0) or 0)))
+        migrated.setdefault("legacy_used_seconds", max(0, int(migrated.get("legacy_used_seconds", 0) or 0)))
+        migrated.setdefault("customer_email", "")
+        migrated.setdefault("recovery_code", "")
+        migrated.setdefault("customer_id", "")
+        migrated.setdefault("subscription_id", "")
+        migrated.setdefault("subscription_status", "inactive")
+        migrated.setdefault("subscription_current_period_end", "")
+        migrated.setdefault("subscription_cancel_at_period_end", False)
+        migrated.setdefault("trial_started_at", int(migrated.get("created_at", now) or now))
+        migrated.setdefault("trial_ends_at", int(migrated.get("trial_started_at", now) or now) + (TRIAL_DAYS * 86400))
+        migrated.setdefault("purchase_history", [])
+        migrated.setdefault("restored_codes", [])
+        migrated.setdefault("created_at", now)
+        migrated.setdefault("updated_at", now)
+        migrated.setdefault("last_synced_at", 0)
+        migrated["version"] = 2
+        return migrated
+
+    now = int(time.time())
+    created_at = int(state.get("created_at", now) or now)
+    migrated = _new_state()
+    migrated.update(
+        {
+            "legacy_remaining_seconds": max(0, int(state.get("remaining_seconds", 0) or 0)),
+            "legacy_used_seconds": max(0, int(state.get("used_seconds", 0) or 0)),
+            "lifetime": bool(state.get("lifetime", False)),
+            "customer_email": str(state.get("customer_email", "")).strip(),
+            "recovery_code": str(state.get("recovery_code", "")).strip(),
+            "purchase_history": list(state.get("purchase_history", [])),
+            "restored_codes": list(state.get("restored_codes", [])),
+            "created_at": created_at,
+            "updated_at": int(state.get("updated_at", created_at) or created_at),
+            "trial_started_at": created_at,
+            "trial_ends_at": created_at + (TRIAL_DAYS * 86400),
+        }
+    )
+    return migrated
 
 
 def _verify_state(state):
@@ -148,7 +213,7 @@ def _verify_state(state):
 
 
 def _write_state(state):
-    state = dict(state)
+    state = dict(_migrate_state(state))
     state["updated_at"] = int(time.time())
     payload = {k: v for k, v in state.items() if k != "signature"}
     state["signature"] = _sign_payload(payload)
@@ -168,6 +233,9 @@ def load_or_init_state():
             return _write_state(_new_state())
 
         if _verify_state(state):
+            migrated = _migrate_state(state)
+            if migrated != state:
+                return _write_state(migrated)
             return state
 
         tampered_path = LICENSE_PATH + ".tampered"
@@ -178,25 +246,10 @@ def load_or_init_state():
         except Exception:
             pass
 
-        # If tampering is detected, preserve app stability but revoke remaining metered time.
         reset = _new_state()
-        reset["remaining_seconds"] = 0
+        reset["trial_started_at"] = int(time.time())
+        reset["trial_ends_at"] = reset["trial_started_at"]
         return _write_state(reset)
-
-
-def get_status():
-    state = load_or_init_state()
-    remaining = max(0, int(state.get("remaining_seconds", 0)))
-    lifetime = bool(state.get("lifetime", False))
-    return {
-        "customer_email": str(state.get("customer_email", "")).strip(),
-        "recovery_code": str(state.get("recovery_code", "")).strip(),
-        "remaining_seconds": remaining,
-        "remaining_hours": round(remaining / 3600.0, 2),
-        "remaining_display": format_seconds_display(remaining),
-        "lifetime": lifetime,
-        "can_protect": lifetime or remaining > 0,
-    }
 
 
 def format_seconds_display(total_seconds):
@@ -209,6 +262,114 @@ def format_seconds_display(total_seconds):
     return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
 
 
+def _subscription_is_active(state, now=None):
+    now = int(time.time() if now is None else now)
+    status = str(state.get("subscription_status", "inactive")).strip().lower()
+    current_period_end = _iso_to_epoch(state.get("subscription_current_period_end", ""))
+    if status not in ACTIVE_SUBSCRIPTION_STATUSES:
+        return False
+    if current_period_end and current_period_end < now:
+        return False
+    return bool(state.get("subscription_id")) or status in ACTIVE_SUBSCRIPTION_STATUSES
+
+
+def _trial_is_active(state, now=None):
+    now = int(time.time() if now is None else now)
+    if max(0, int(state.get("legacy_remaining_seconds", 0) or 0)) > 0:
+        return False
+    if bool(state.get("lifetime", False)) or _subscription_is_active(state, now):
+        return False
+    trial_end = int(state.get("trial_ends_at", 0) or 0)
+    return trial_end > now
+
+
+def _current_billing_kind(state, now=None):
+    now = int(time.time() if now is None else now)
+    if bool(state.get("lifetime", False)):
+        return "lifetime"
+    if _subscription_is_active(state, now):
+        return "subscription"
+    if max(0, int(state.get("legacy_remaining_seconds", 0) or 0)) > 0:
+        return "legacy_credits"
+    if _trial_is_active(state, now):
+        return "trial"
+    return "none"
+
+
+def _record_purchase(state, purchase_type, email, hours_added=0, plan_key="", recovery_code=""):
+    purchase_history = list(state.get("purchase_history", []))
+    normalized_email = str(email or "").strip().lower()
+    resolved_code = _normalize_recovery_code(recovery_code)
+    if not resolved_code:
+        resolved_code = _build_recovery_token(purchase_type, hours_added, normalized_email)
+    if normalized_email:
+        state["customer_email"] = normalized_email
+    state["recovery_code"] = resolved_code
+    purchase_history.append(
+        {
+            "type": purchase_type,
+            "plan_key": plan_key,
+            "hours_added": float(hours_added),
+            "email": normalized_email,
+            "recovery_code": resolved_code,
+            "ts": int(time.time()),
+        }
+    )
+    state["purchase_history"] = purchase_history[-50:]
+    return resolved_code
+
+
+def get_status():
+    state = load_or_init_state()
+    now = int(time.time())
+    billing_kind = _current_billing_kind(state, now)
+    legacy_remaining = max(0, int(state.get("legacy_remaining_seconds", 0) or 0))
+    trial_remaining = max(0, int(state.get("trial_ends_at", 0) or 0) - now) if _trial_is_active(state, now) else 0
+    limited_remaining = legacy_remaining if billing_kind == "legacy_credits" else trial_remaining if billing_kind == "trial" else 0
+    subscription_status = str(state.get("subscription_status", "inactive")).strip() or "inactive"
+
+    if billing_kind == "lifetime":
+        plan_key = "lifetime"
+        plan_label = "Lifetime License"
+    elif billing_kind == "subscription":
+        plan_key = "annual"
+        plan_label = "Annual Subscription"
+    elif billing_kind == "legacy_credits":
+        plan_key = "legacy_credits"
+        plan_label = "Legacy Credits"
+    elif billing_kind == "trial":
+        plan_key = "trial"
+        plan_label = "Free Trial"
+    else:
+        plan_key = ""
+        plan_label = ""
+
+    return {
+        "customer_email": str(state.get("customer_email", "")).strip(),
+        "recovery_code": str(state.get("recovery_code", "")).strip(),
+        "remaining_seconds": limited_remaining,
+        "remaining_hours": round(limited_remaining / 3600.0, 2),
+        "remaining_display": format_seconds_display(limited_remaining),
+        "legacy_remaining_seconds": legacy_remaining,
+        "legacy_remaining_hours": round(legacy_remaining / 3600.0, 2),
+        "legacy_remaining_display": format_seconds_display(legacy_remaining),
+        "lifetime": bool(state.get("lifetime", False)),
+        "billing_kind": billing_kind,
+        "plan_key": plan_key,
+        "plan_label": plan_label,
+        "trial_active": billing_kind == "trial",
+        "trial_days_remaining": max(0, int((trial_remaining + 86399) // 86400)) if trial_remaining else 0,
+        "trial_ends_at": int(state.get("trial_ends_at", 0) or 0),
+        "trial_display": format_seconds_display(trial_remaining),
+        "subscription_active": billing_kind == "subscription",
+        "subscription_status": subscription_status,
+        "subscription_current_period_end": str(state.get("subscription_current_period_end", "")).strip(),
+        "subscription_current_period_end_display": _format_date(state.get("subscription_current_period_end", "")),
+        "subscription_cancel_at_period_end": bool(state.get("subscription_cancel_at_period_end", False)),
+        "can_protect": billing_kind in {"trial", "subscription", "lifetime", "legacy_credits"},
+    }
+
+
 def consume_active_seconds(seconds):
     try:
         seconds = int(seconds)
@@ -219,50 +380,13 @@ def consume_active_seconds(seconds):
 
     with _STATE_LOCK:
         state = load_or_init_state()
-        if state.get("lifetime", False):
-            return {
-                "customer_email": str(state.get("customer_email", "")).strip(),
-                "recovery_code": str(state.get("recovery_code", "")).strip(),
-                "remaining_seconds": int(state.get("remaining_seconds", 0)),
-                "remaining_hours": round(int(state.get("remaining_seconds", 0)) / 3600.0, 2),
-                "remaining_display": format_seconds_display(int(state.get("remaining_seconds", 0))),
-                "lifetime": True,
-                "can_protect": True,
-            }
-
-        remaining = max(0, int(state.get("remaining_seconds", 0)) - seconds)
-        used = max(0, int(state.get("used_seconds", 0)) + seconds)
-        state["remaining_seconds"] = remaining
-        state["used_seconds"] = used
-        state = _write_state(state)
-
-    return {
-        "customer_email": str(state.get("customer_email", "")).strip(),
-        "recovery_code": str(state.get("recovery_code", "")).strip(),
-        "remaining_seconds": int(state.get("remaining_seconds", 0)),
-        "remaining_hours": round(int(state.get("remaining_seconds", 0)) / 3600.0, 2),
-        "remaining_display": format_seconds_display(int(state.get("remaining_seconds", 0))),
-        "lifetime": bool(state.get("lifetime", False)),
-        "can_protect": bool(state.get("lifetime", False)) or int(state.get("remaining_seconds", 0)) > 0,
-    }
-
-
-def _record_purchase(state, purchase_type, email, hours_added=0):
-    purchase_history = list(state.get("purchase_history", []))
-    normalized_email = str(email or "").strip()
-    recovery_code = _build_recovery_token(purchase_type, hours_added, normalized_email)
-    if normalized_email:
-        state["customer_email"] = normalized_email
-    state["recovery_code"] = recovery_code
-    purchase_history.append({
-        "type": purchase_type,
-        "hours_added": float(hours_added),
-        "email": normalized_email,
-        "recovery_code": recovery_code,
-        "ts": int(time.time()),
-    })
-    state["purchase_history"] = purchase_history[-25:]
-    return recovery_code
+        if _current_billing_kind(state) == "legacy_credits":
+            remaining = max(0, int(state.get("legacy_remaining_seconds", 0) or 0) - seconds)
+            used = max(0, int(state.get("legacy_used_seconds", 0) or 0) + seconds)
+            state["legacy_remaining_seconds"] = remaining
+            state["legacy_used_seconds"] = used
+            _write_state(state)
+    return get_status()
 
 
 def add_hours(hours, email=""):
@@ -275,25 +399,68 @@ def add_hours(hours, email=""):
 
     with _STATE_LOCK:
         state = load_or_init_state()
-        recovery_code = str(state.get("recovery_code", "")).strip()
         if not state.get("lifetime", False):
-            state["remaining_seconds"] = max(0, int(state.get("remaining_seconds", 0))) + seconds
-            recovery_code = _record_purchase(state, "hours", email, hours)
+            state["legacy_remaining_seconds"] = max(0, int(state.get("legacy_remaining_seconds", 0) or 0)) + seconds
+            _record_purchase(state, "hours", email, hours_added=hours, plan_key="legacy_credits")
             _write_state(state)
-    status = get_status()
-    status["recovery_code"] = recovery_code
-    return status
+    return get_status()
 
 
-def activate_lifetime(email=""):
+def activate_lifetime(email="", recovery_code=""):
     with _STATE_LOCK:
         state = load_or_init_state()
         state["lifetime"] = True
-        recovery_code = _record_purchase(state, "lifetime", email, 0)
+        _record_purchase(state, "lifetime", email, plan_key="lifetime", recovery_code=recovery_code)
         _write_state(state)
-    status = get_status()
-    status["recovery_code"] = recovery_code
-    return status
+    return get_status()
+
+
+def activate_subscription(
+    email="",
+    plan_key="annual",
+    current_period_end="",
+    recovery_code="",
+    status="active",
+    subscription_id="",
+    customer_id="",
+    cancel_at_period_end=False,
+):
+    with _STATE_LOCK:
+        state = load_or_init_state()
+        if email:
+            state["customer_email"] = str(email).strip().lower()
+        state["subscription_status"] = str(status or "active").strip() or "active"
+        state["subscription_current_period_end"] = str(current_period_end or "").strip()
+        state["subscription_id"] = str(subscription_id or "").strip()
+        state["customer_id"] = str(customer_id or "").strip()
+        state["subscription_cancel_at_period_end"] = bool(cancel_at_period_end)
+        _record_purchase(state, "subscription", email, plan_key=plan_key, recovery_code=recovery_code)
+        _write_state(state)
+    return get_status()
+
+
+def sync_remote_account(account_payload, recovery_code=""):
+    if not isinstance(account_payload, dict):
+        return get_status()
+
+    with _STATE_LOCK:
+        state = load_or_init_state()
+        email = str(account_payload.get("email", state.get("customer_email", ""))).strip().lower()
+        if email:
+            state["customer_email"] = email
+        resolved_code = _normalize_recovery_code(account_payload.get("recovery_code", "") or recovery_code or state.get("recovery_code", ""))
+        if resolved_code:
+            state["recovery_code"] = resolved_code
+        state["customer_id"] = str(account_payload.get("customer_id", state.get("customer_id", ""))).strip()
+        state["subscription_id"] = str(account_payload.get("subscription_id", state.get("subscription_id", ""))).strip()
+        state["subscription_status"] = str(account_payload.get("subscription_status", state.get("subscription_status", "inactive"))).strip() or "inactive"
+        state["subscription_current_period_end"] = str(account_payload.get("subscription_current_period_end", state.get("subscription_current_period_end", ""))).strip()
+        state["subscription_cancel_at_period_end"] = bool(account_payload.get("subscription_cancel_at_period_end", state.get("subscription_cancel_at_period_end", False)))
+        if bool(account_payload.get("lifetime", False)):
+            state["lifetime"] = True
+        state["last_synced_at"] = int(time.time())
+        _write_state(state)
+    return get_status()
 
 
 def restore_from_recovery_code(recovery_code, email=""):
@@ -357,7 +524,7 @@ def restore_from_recovery_code(recovery_code, email=""):
         if purchase_type == "lifetime":
             state["lifetime"] = True
         elif hours_added > 0:
-            state["remaining_seconds"] = max(0, int(state.get("remaining_seconds", 0))) + int(hours_added * 3600)
+            state["legacy_remaining_seconds"] = max(0, int(state.get("legacy_remaining_seconds", 0) or 0)) + int(hours_added * 3600)
 
         if email:
             state["customer_email"] = email

@@ -21,6 +21,7 @@ import threading
 import socketserver
 import http.server
 import time
+import os
 
 
 _SUCCESS_PATHS = ("/success",)
@@ -63,13 +64,24 @@ CANCEL_HTML = """<!DOCTYPE html>
 
 def main():
     if len(sys.argv) < 2:
-        print(json.dumps({"ok": False, "reason": "no_url"}), flush=True)
+        payload = {"ok": False, "reason": "no_url"}
+        print(json.dumps(payload), flush=True)
         sys.exit(1)
 
     checkout_url = sys.argv[1]
+    result_path = sys.argv[2] if len(sys.argv) >= 3 else ""
     result = {"ok": False, "reason": "closed"}
     shutdown_event = threading.Event()
     window_ref = [None]
+
+    def _emit_result(payload):
+        try:
+            if result_path:
+                with open(result_path, "w", encoding="utf-8") as fh:
+                    json.dump(payload, fh)
+        except Exception:
+            pass
+        print(json.dumps(payload), flush=True)
 
     # ── Tiny HTTP server that catches the Stripe success/cancel redirect ──────
 
@@ -146,7 +158,7 @@ def main():
 
     # ── Emit result and exit ─────────────────────────────────────────────────
 
-    print(json.dumps(result), flush=True)
+    _emit_result(result)
 
 
 if __name__ == "__main__":

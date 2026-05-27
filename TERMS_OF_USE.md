@@ -26,11 +26,14 @@ The Software is provided "as is" without warranties of any kind, to the fullest 
 6. Limitation of Liability
 To the fullest extent allowed by law, Knight Logics is not liable for indirect, incidental, special, consequential, or punitive damages, or any loss of data, profits, or business interruption.
 
-7. Termination
+7. Billing and Renewals
+If you purchase a subscription plan, it may renew automatically until canceled through the supported billing-management method. Lifetime licenses are one-time purchases. Access to paid features may be suspended if payment is reversed, refunded, or the subscription becomes inactive.
+
+8. Termination
 Knight Logics may suspend or terminate rights granted under these Terms if you violate them.
 
-8. Changes to Terms
+9. Changes to Terms
 Knight Logics may update these Terms from time to time. Continued use after updates constitutes acceptance of the revised Terms.
 
-9. Contact
+10. Contact
 For support or legal questions, use the contact method on the official Knight Logics website.

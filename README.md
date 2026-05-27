@@ -32,12 +32,26 @@ Optional executables:
 - Modes: blank, single image, slideshow, video playlist
 - Background runtime with tray controls
 - Settings persisted in AppData
+- 14-day free trial for new installs
+- Hosted billing with annual subscription and lifetime purchase options
+- Recovery-code based account restore and billing management
 - Auto-update prompt when newer GitHub release exists
+
+## Billing And Account Model
+
+- New installs start with a free trial.
+- Paid access is sold as either an annual subscription or a lifetime license.
+- Billing is handled by a hosted licensing service and Stripe checkout.
+- The app stores your billing email and recovery code locally so you can restore access on another machine.
+- "Manage Billing" opens the hosted customer billing portal for subscription changes.
 
 ## Persistent Settings
 
 Settings are stored in:
 - `%APPDATA%\KnightLogics\DisplayControlPlus\config.json`
+
+Licensing/account state is stored in:
+- `%APPDATA%\KnightLogics\DisplayControlPlus\license.json`
 
 Media attachments persist across restarts as saved file paths. If files are moved or deleted, the setting remains but media cannot load until paths are corrected.
 

@@ -19,6 +19,17 @@ Key Features
 - Background process support for always-on protection.
 - Installer-based deployment for non-technical users.
 - Persistent settings and runtime state in AppData for packaged builds.
+- Free trial for new installs.
+- Hosted annual subscription and lifetime billing options.
+- Recovery-code based account restore and billing portal access.
+
+Billing And Account Model
+-------------------------
+- New installs begin on a free trial.
+- Paid access is offered as an annual subscription or a lifetime license.
+- Billing is handled by a hosted licensing service and Stripe checkout.
+- The app stores your billing email and recovery code locally so you can restore access on another machine.
+- "Manage Billing" opens the hosted customer billing portal for subscription changes.
 
 Installation
 ------------

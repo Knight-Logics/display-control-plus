@@ -3,12 +3,12 @@
 
 [Setup]
 AppName=Display Control
-AppVersion=1.0.17
+AppVersion=1.1.0
 DefaultDirName={commonpf64}\Display Control
 DefaultGroupName=Display Control
 UninstallDisplayIcon={app}\DisplayControl.exe
 OutputDir=..
-OutputBaseFilename=DisplayControlSetup_v1.0.17
+OutputBaseFilename=DisplayControlSetup_v1.1.0
 SetupIconFile=..\Display Control+ Logo.ico
 Compression=lzma
 SolidCompression=yes
@@ -19,6 +19,7 @@ CloseApplications=yes
 Source: "..\dist\DisplayControl.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\dist\tray.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\dist\overlay_bg.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\dist\checkout_window.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\Display Control+ Logo.png"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 Source: "..\Display Control+ Logo.ico"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 Source: "..\KnightLogicsLogo.png"; DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
@@ -29,8 +30,9 @@ Name: "{group}\Display Control+"; Filename: "{app}\DisplayControl.exe"; IconFile
 
 [InstallDelete]
 Type: files; Name: "{commondesktop}\Display Control.lnk"
-Type: files; Name: "{userdesktop}\Display Control.lnk"
+Type: files; Name: "{commondesktop}\Display Control+.lnk"
 Type: files; Name: "{group}\Display Control.lnk"
+Type: files; Name: "{group}\Display Control+.lnk"
 
 [Tasks]
 Name: "trayicon"; Description: "Start in &Task Tray on login"; GroupDescription: "Startup options:"; Flags: checkedonce
