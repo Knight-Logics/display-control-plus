@@ -404,12 +404,171 @@ def show_video_overlay(geometry, video_paths, demo=False):
     if state["cap"] is not None:
         state["cap"].release()
 
+
+def _normalize_geometry(geometry):
+    if not isinstance(geometry, (list, tuple)) or len(geometry) != 4:
+        return None
+    values = []
+    for value in geometry:
+        try:
+            values.append(int(value))
+        except (TypeError, ValueError):
+            return None
+    return tuple(values)
+
+
+def _monitor_identity(monitors, idx):
+    if not isinstance(idx, int) or idx < 0 or idx >= len(monitors):
+        return None
+    geometry = _normalize_geometry(monitors[idx].get("geometry"))
+    if geometry is None:
+        return None
+    return {
+        "index": idx,
+        "geometry": list(geometry),
+        "device": str(monitors[idx].get("device", "")).strip(),
+    }
+
+
+def _resolve_monitor_indices(monitors, saved_indices=None, saved_geometries=None, saved_devices=None):
+    saved_indices = [idx for idx in (saved_indices or []) if isinstance(idx, int) and idx >= 0]
+    saved_geometries = [_normalize_geometry(geometry) for geometry in (saved_geometries or [])]
+    saved_devices = [str(device or "").strip() for device in (saved_devices or [])]
+
+    resolved = []
+    used = set()
+
+    def add_idx(idx):
+        if isinstance(idx, int) and 0 <= idx < len(monitors) and idx not in used:
+            resolved.append(idx)
+            used.add(idx)
+
+    ordered_count = max(len(saved_indices), len(saved_geometries), len(saved_devices))
+    for pos in range(ordered_count):
+        saved_device = saved_devices[pos].lower() if pos < len(saved_devices) else ""
+        saved_geometry = saved_geometries[pos] if pos < len(saved_geometries) else None
+        matched_idx = None
+
+        if saved_device:
+            for idx, mon in enumerate(monitors):
+                if idx in used:
+                    continue
+                device_name = str(mon.get("device", "")).strip().lower()
+                if device_name and device_name == saved_device:
+                    matched_idx = idx
+                    break
+
+        if matched_idx is None and saved_geometry is not None:
+            for idx, mon in enumerate(monitors):
+                if idx in used:
+                    continue
+                if _normalize_geometry(mon.get("geometry")) == saved_geometry:
+                    matched_idx = idx
+                    break
+
+        if matched_idx is None and pos < len(saved_indices):
+            candidate = saved_indices[pos]
+            if 0 <= candidate < len(monitors) and candidate not in used:
+                matched_idx = candidate
+
+        add_idx(matched_idx)
+
+    if not resolved:
+        for idx in saved_indices:
+            add_idx(idx)
+
+    return resolved
+
+
+def _hydrate_setting_group(monitors, group):
+    hydrated = dict(group or {})
+    original_indices = [idx for idx in hydrated.get("monitor_indices", []) if isinstance(idx, int)]
+    resolved_indices = _resolve_monitor_indices(
+        monitors,
+        original_indices,
+        hydrated.get("monitor_geometries", []),
+        hydrated.get("monitor_devices", []),
+    )
+    if original_indices and resolved_indices and resolved_indices != original_indices:
+        logging.info(
+            f"Resolved saved monitor indices {original_indices} to current indices {resolved_indices} "
+            f"for group '{hydrated.get('name', 'Setting')}'."
+        )
+
+    hydrated["monitor_indices"] = resolved_indices
+    hydrated["monitor_geometries"] = []
+    hydrated["monitor_devices"] = []
+    for idx in resolved_indices:
+        identity = _monitor_identity(monitors, idx)
+        if identity is None:
+            continue
+        hydrated["monitor_geometries"].append(identity["geometry"])
+        hydrated["monitor_devices"].append(identity["device"])
+    return hydrated
+
+
+def _collect_overlay_targets(groups, monitors, idle_snapshot):
+    overlay_targets = {}
+    for raw_group in groups:
+        if not isinstance(raw_group, dict):
+            continue
+        group = _hydrate_setting_group(monitors, raw_group)
+        indices = group.get("monitor_indices", [])
+        if not indices:
+            continue
+
+        timeout_min = group.get("timeout", 5)
+        timeout_sec = max(1, int(float(timeout_min) * 60))
+        scope = group.get("scope", "system")
+        detection_mode = group.get("detection_mode", "input")
+        if detection_mode not in ("input", "activity", "both"):
+            detection_mode = "input"
+
+        mode_idle = idle_snapshot.get(detection_mode, {})
+        if scope == "system":
+            if mode_idle.get("system", 0) >= timeout_sec:
+                for idx in indices:
+                    overlay_targets[idx] = group
+            continue
+
+        for idx in indices:
+            geometry = _normalize_geometry(monitors[idx].get("geometry"))
+            if geometry is not None and mode_idle.get(geometry, 0) >= timeout_sec:
+                overlay_targets[idx] = group
+
+    return overlay_targets
+
+
+def _collect_wake_targets(groups, monitors, idle_snapshot):
+    wake_targets = set()
+    input_idle = idle_snapshot.get("input", {})
+    for raw_group in groups:
+        if not isinstance(raw_group, dict):
+            continue
+        group = _hydrate_setting_group(monitors, raw_group)
+        indices = group.get("monitor_indices", [])
+        if not indices:
+            continue
+
+        scope = group.get("scope", "system")
+        if scope == "system":
+            if input_idle.get("system", 999999) < 1:
+                wake_targets.update(indices)
+            continue
+
+        for idx in indices:
+            geometry = _normalize_geometry(monitors[idx].get("geometry"))
+            if geometry is not None and input_idle.get(geometry, 999999) < 1:
+                wake_targets.add(idx)
+
+    return wake_targets
+
 # --- Config Functions ---
 def save_config(monitors, selected, mode, file_paths, timeout, interval, enabled, scope, detection_mode,
     setting_groups=None, paused=None):
     existing = load_config() or {}
-    groups = setting_groups or []
-    active = groups[0] if groups else {
+    groups = [_hydrate_setting_group(monitors, group) for group in (setting_groups or []) if isinstance(group, dict)]
+    active = groups[0] if groups else _hydrate_setting_group(monitors, {
         "name": "Setting 1",
         "monitor_indices": list(selected),
         "mode": mode,
@@ -419,11 +578,12 @@ def save_config(monitors, selected, mode, file_paths, timeout, interval, enabled
         "enabled": enabled,
         "scope": scope,
         "detection_mode": detection_mode
-    }
+    })
     active_indices = list(active.get("monitor_indices", selected))
     config = {
         # Save both geometries and indices for clarity and backward compatibility
-        "monitors": [monitors[i]['geometry'] for i in active_indices if i < len(monitors)],
+        "monitors": list(active.get("monitor_geometries", [])),
+        "monitor_devices": list(active.get("monitor_devices", [])),
         "monitor_indices": active_indices,
         "mode": active.get("mode", mode),
         "file_paths": list(active.get("file_paths", file_paths)),
@@ -632,6 +792,13 @@ def run_background_overlay():
                 time.sleep(30)
                 continue
 
+            groups = [_hydrate_setting_group(all_monitors, group) for group in groups]
+            groups = [group for group in groups if group.get("monitor_indices")]
+            if not groups:
+                logging.warning("No saved monitor mappings matched current monitors. Sleeping 30s.")
+                time.sleep(30)
+                continue
+
             # Use the most comprehensive detection mode required by any active group
             # so the detector tracks whichever signal(s) the groups actually need.
             _group_modes = {g.get("detection_mode", "input") for g in groups}
@@ -643,30 +810,7 @@ def run_background_overlay():
             try:
                 while True:
                     idle_snapshot = detector.get_idle_snapshot()
-                    overlay_targets.clear()
-
-                    for group in groups:
-                        indices = [i for i in group.get("monitor_indices", []) if isinstance(i, int) and i < len(all_monitors)]
-                        if not indices:
-                            continue
-
-                        timeout_min = group.get("timeout", 5)
-                        timeout_sec = int(float(timeout_min) * 60)
-                        scope = group.get("scope", "system")
-                        detection_mode = group.get("detection_mode", "input")
-                        if detection_mode not in ("input", "activity", "both"):
-                            detection_mode = "input"
-
-                        mode_idle = idle_snapshot.get(detection_mode, {})
-                        if scope == "system":
-                            if mode_idle.get("system", 0) >= timeout_sec:
-                                for idx in indices:
-                                    overlay_targets[idx] = group
-                        else:
-                            for idx in indices:
-                                geom = tuple(all_monitors[idx]["geometry"])
-                                if mode_idle.get(geom, 0) >= timeout_sec:
-                                    overlay_targets[idx] = group
+                    overlay_targets = _collect_overlay_targets(groups, all_monitors, idle_snapshot)
 
                     if overlay_targets:
                         break
@@ -678,7 +822,8 @@ def run_background_overlay():
                         new_groups = [g for g in new_config.get("setting_groups", []) if isinstance(g, dict) and g.get("enabled", True)]
                         new_dump = json.dumps(new_groups, sort_keys=True)
                         if new_dump != config_dump:
-                            groups = new_groups
+                            groups = [_hydrate_setting_group(all_monitors, group) for group in new_groups]
+                            groups = [group for group in groups if group.get("monitor_indices")]
                             config_dump = new_dump
                             last_config_sig = new_sig
                             break
@@ -689,7 +834,7 @@ def run_background_overlay():
             if not overlay_targets:
                 continue
 
-            overlay_procs = []
+            overlay_procs = {}
             for idx, group in overlay_targets.items():
                 geometry = all_monitors[idx]["geometry"]
                 active_mode = group.get("mode", "blank")
@@ -707,54 +852,66 @@ def run_background_overlay():
                 else:
                     logging.warning(f"Skipping invalid group mode/files for monitor {idx + 1}: {active_mode}")
                     continue
-                overlay_procs.append(proc)
+                overlay_procs[idx] = proc
 
-            for proc in overlay_procs:
+            for proc in overlay_procs.values():
                 proc.start()
 
             logging.info("Overlay(s) started. Waiting for activity to close overlays.")
             last_meter_tick = time.time()
             meter_accumulator = 0.0
-            while True:
-                # Count time only while at least one overlay process is actively running,
-                # regardless of monitor count or overlay mode.
-                any_overlay_alive = any(proc.is_alive() for proc in overlay_procs)
-                if not any_overlay_alive:
-                    break
-
-                now = time.time()
-                delta = max(0.0, now - last_meter_tick)
-                last_meter_tick = now
-                meter_accumulator += delta
-                consumed_whole_seconds = int(meter_accumulator)
-                if consumed_whole_seconds > 0:
-                    status_after = consume_active_seconds(consumed_whole_seconds)
-                    meter_accumulator -= consumed_whole_seconds
-                    session_overlay_seconds += consumed_whole_seconds
-                    _write_usage_state(
-                        active=True,
-                        active_session_seconds=session_overlay_seconds,
-                        remaining_seconds=status_after.get("remaining_seconds", 0),
-                        lifetime=bool(status_after.get("lifetime", False)),
-                    )
-                    if not status_after.get("can_protect", False):
-                        set_config_paused(True, "license_exhausted")
-                        logging.warning("Protection time reached zero while overlay was active.")
+            close_detector = MonitorActivityDetector(all_monitors, mode="input", scope="per-monitor")
+            close_detector.start()
+            try:
+                while True:
+                    overlay_procs = {idx: proc for idx, proc in overlay_procs.items() if proc.is_alive()}
+                    if not overlay_procs:
                         break
-                else:
-                    current_status = get_license_status()
-                    _write_usage_state(
-                        active=True,
-                        active_session_seconds=session_overlay_seconds,
-                        remaining_seconds=current_status.get("remaining_seconds", 0),
-                        lifetime=bool(current_status.get("lifetime", False)),
-                    )
-                if get_idle_duration() < 1:
-                    break
-                time.sleep(0.5)
+
+                    now = time.time()
+                    delta = max(0.0, now - last_meter_tick)
+                    last_meter_tick = now
+                    meter_accumulator += delta
+                    consumed_whole_seconds = int(meter_accumulator)
+                    if consumed_whole_seconds > 0:
+                        status_after = consume_active_seconds(consumed_whole_seconds)
+                        meter_accumulator -= consumed_whole_seconds
+                        session_overlay_seconds += consumed_whole_seconds
+                        _write_usage_state(
+                            active=True,
+                            active_session_seconds=session_overlay_seconds,
+                            remaining_seconds=status_after.get("remaining_seconds", 0),
+                            lifetime=bool(status_after.get("lifetime", False)),
+                        )
+                        if not status_after.get("can_protect", False):
+                            set_config_paused(True, "license_exhausted")
+                            logging.warning("Protection time reached zero while overlay was active.")
+                            break
+                    else:
+                        current_status = get_license_status()
+                        _write_usage_state(
+                            active=True,
+                            active_session_seconds=session_overlay_seconds,
+                            remaining_seconds=current_status.get("remaining_seconds", 0),
+                            lifetime=bool(current_status.get("lifetime", False)),
+                        )
+
+                    wake_targets = _collect_wake_targets(groups, all_monitors, close_detector.get_idle_snapshot())
+                    for idx, proc in list(overlay_procs.items()):
+                        if idx in wake_targets:
+                            logging.info(f"Input detected for monitor {idx + 1}. Closing overlay.")
+                            proc.terminate()
+                            overlay_procs.pop(idx, None)
+
+                    if not overlay_procs:
+                        break
+
+                    time.sleep(0.5)
+            finally:
+                close_detector.stop()
 
             _write_usage_state(active=False, active_session_seconds=session_overlay_seconds)
-            for proc in overlay_procs:
+            for proc in overlay_procs.values():
                 if proc.is_alive():
                     proc.terminate()
     finally:
@@ -1581,14 +1738,18 @@ def launch_gui():
     monitors = get_monitors()
     cfg = load_config() or {}
     raw_groups = cfg.get("setting_groups", [])
-    setting_groups = [g for g in raw_groups if isinstance(g, dict)]
+    setting_groups = [_hydrate_setting_group(monitors, g) for g in raw_groups if isinstance(g, dict)]
     initial_group = setting_groups[0] if setting_groups else {}
     selected_indices = set(initial_group.get("monitor_indices", []))
-    if not selected_indices and cfg.get("monitors"):
-        saved_geoms = {tuple(g) for g in cfg.get("monitors", [])}
-        for idx, mon in enumerate(monitors):
-            if tuple(mon["geometry"]) in saved_geoms:
-                selected_indices.add(idx)
+    if not selected_indices:
+        selected_indices = set(
+            _resolve_monitor_indices(
+                monitors,
+                cfg.get("monitor_indices", []),
+                cfg.get("monitors", []),
+                cfg.get("monitor_devices", []),
+            )
+        )
     if not selected_indices and monitors:
         selected_indices = set(range(len(monitors)))
     monitor_selected = [idx in selected_indices for idx in range(len(monitors))]
@@ -1805,9 +1966,19 @@ def launch_gui():
         detection_value = detection_mode_var.get()
         if detection_value not in ("input", "activity", "both"):
             detection_value = "input"
+        monitor_geometries = []
+        monitor_devices = []
+        for idx in selected:
+            identity = _monitor_identity(monitors, idx)
+            if identity is None:
+                continue
+            monitor_geometries.append(identity["geometry"])
+            monitor_devices.append(identity["device"])
         return {
             "name": setting_name or "Setting 1",
             "monitor_indices": selected,
+            "monitor_geometries": monitor_geometries,
+            "monitor_devices": monitor_devices,
             "mode": mode_var.get(),
             "file_paths": list(file_paths),
             "timeout": timeout_label_to_value.get(timeout_choice.get(), timeout_var.get()),

@@ -12,21 +12,24 @@ def get_monitors():
         import win32api
         import win32con
         import win32gui
-        def monitor_enum_proc(hMonitor, hdcMonitor, lprcMonitor, dwData):
-            left, top, right, bottom = win32gui.GetMonitorInfo(hMonitor)['Monitor']
-            idx = len(monitors)
-            monitor_info = {'geometry': (left, top, right, bottom), 'index': idx}
-            monitors.append(monitor_info)
-            logging.info(f"Detected monitor {idx}: geometry=({left},{top},{right},{bottom})")
-            return True
         # Try win32api fallback
         try:
             raw_monitors = win32api.EnumDisplayMonitors()
             for idx, (handle, hdc, rect) in enumerate(raw_monitors):
                 left, top, right, bottom = rect
-                monitor_info = {'geometry': (left, top, right, bottom), 'index': idx}
+                device_name = ""
+                try:
+                    monitor_details = win32api.GetMonitorInfo(handle)
+                    device_name = str(monitor_details.get('Device', '')).strip()
+                except Exception:
+                    try:
+                        monitor_details = win32gui.GetMonitorInfo(handle)
+                        device_name = str(monitor_details.get('Device', '')).strip()
+                    except Exception:
+                        device_name = ""
+                monitor_info = {'geometry': (left, top, right, bottom), 'index': idx, 'device': device_name}
                 monitors.append(monitor_info)
-                logging.info(f"Detected monitor {idx}: geometry=({left},{top},{right},{bottom})")
+                logging.info(f"Detected monitor {idx}: geometry=({left},{top},{right},{bottom}), device={device_name}")
         except Exception as e:
             logging.error(f"win32api.EnumDisplayMonitors failed: {e}")
     except Exception as e:
@@ -39,7 +42,7 @@ def get_monitors():
             rect = lprcMonitor.contents
             left, top, right, bottom = rect[0], rect[1], rect[2], rect[3]
             idx = len(monitors)
-            monitor_info = {'geometry': (left, top, right, bottom), 'index': idx}
+            monitor_info = {'geometry': (left, top, right, bottom), 'index': idx, 'device': ''}
             monitors.append(monitor_info)
             logging.info(f"Detected monitor {idx}: geometry=({left},{top},{right},{bottom})")
             return 1

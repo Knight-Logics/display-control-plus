@@ -63,7 +63,6 @@ class MonitorActivityDetector:
             if self._last_mouse_pos:
                 last_x, last_y = self._last_mouse_pos
                 if abs(x - last_x) < 2 and abs(y - last_y) < 2:
-                    logging.debug(f"Ignored mouse move at ({x},{y}) - too small delta")
                     return
             self._last_mouse_pos = (x, y)
             with self._lock:
@@ -73,8 +72,6 @@ class MonitorActivityDetector:
                     if left <= x < right and top <= y < bottom:
                         self._idle_times[tuple(m['geometry'])] = 0
                         m['last_input_time'] = time.time()
-                        logging.info(f"[DIAG] Mouse move event: ({x},{y}) on monitor {tuple(m['geometry'])}. Idle time reset.")
-            logging.debug(f"Mouse moved at ({x},{y})")
 
         def on_mouse_click(x, y, button, pressed):
             on_mouse_move(x, y)
@@ -88,8 +85,6 @@ class MonitorActivityDetector:
                 for m in self.monitors:
                     self._idle_times[tuple(m['geometry'])] = 0
                     m['last_input_time'] = time.time()
-                    logging.info(f"[DIAG] Keyboard event detected. Idle time reset for monitor {tuple(m['geometry'])}.")
-            logging.debug("Keyboard event detected")
 
         self._mouse_listener = mouse.Listener(
             on_move=on_mouse_move,
@@ -138,10 +133,6 @@ class MonitorActivityDetector:
                             with self._lock:
                                 self._last_activity_time = now
                                 m['last_activity_time'] = now
-                            logging.debug(
-                                f"[ACTIVITY] Screen change on {geom}: "
-                                f"mean_diff={mean_diff:.2f}, activity timer reset."
-                            )
                     prev[geom] = small
                 except Exception as e:
                     logging.debug(f"[ACTIVITY] Screen capture error on {geom}: {e}")
@@ -190,11 +181,6 @@ class MonitorActivityDetector:
                         self._idle_times[geom] = m_both_idle
                     else:
                         self._idle_times[geom] = m_input_idle
-
-                if last_idle_snapshot:
-                    for k in self._idle_times:
-                        if self._idle_times[k] < last_idle_snapshot.get(k, 0):
-                            logging.warning(f"[DIAG] Idle time for {k} decreased (reset). Activity detected.")
                 last_idle_snapshot = self._idle_times.copy()
             time.sleep(1)
 
