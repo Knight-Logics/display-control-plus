@@ -1,0 +1,17 @@
+title = "Knight Logics secret scanning rules"
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "smtp-password-assignment"
+description = "Detected an SMTP password assignment that must remain outside source control."
+regex = '''(?im)^\s*(?:(?:V11B|PIXELFORGE|VIDEOFORGE)_)?SMTP_PASS(?:WORD)?\s*[:=]\s*["']?([^\r\n"'#]{8,})["']?\s*$'''
+secretGroup = 1
+keywords = ["SMTP_PASS", "SMTP_PASSWORD"]
+
+[rules.allowlist]
+regexTarget = "secret"
+regexes = [
+  '''(?i)^\s*(?:change[-_ ]?me|replace[-_ ]?me|your[-_ ].*|example|placeholder|dummy|test|\[?set\]?|<[^>]+>)\s*$'''
+]
