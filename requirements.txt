@@ -1,5 +1,5 @@
-﻿# Runtime dependencies (Display Control+)
-Pillow==11.3.0
+# Runtime dependencies (Display Control+)
+Pillow==12.2.0
 pynput==1.8.1
 pywin32==311
 pystray==0.19.5
