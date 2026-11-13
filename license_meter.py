@@ -3,6 +3,7 @@ import getpass
 import hashlib
 import hmac
 import json
+import logging
 import os
 import platform
 import re
@@ -26,22 +27,59 @@ os.makedirs(RUNTIME_DIR, exist_ok=True)
 LICENSE_PATH = os.path.join(RUNTIME_DIR, "license.json")
 RECOVERY_SIGNING_SECRET_BAKED = "DisplayControlPlus-Recovery-LocalFallback-CHANGE-ME"
 ACTIVE_SUBSCRIPTION_STATUSES = {"active", "trialing", "past_due"}
+# Keep a previously synced subscription usable when the license server cannot
+# confirm a renewal. 14 days matches the local trial window.
+OFFLINE_GRACE_SECONDS = 14 * 24 * 60 * 60
+SIGN_PREFIX_V2 = "KnightLogics.DisplayControlPlus.v2|"
+SIGN_PREFIX_V1 = "KnightLogics.DisplayControlPlus.v1|"
 
 _STATE_LOCK = threading.RLock()
+_LOG = logging.getLogger("license_meter")
 
 
-def _machine_fingerprint():
-    parts = [
-        platform.node(),
-        getpass.getuser(),
-        os.environ.get("PROCESSOR_IDENTIFIER", ""),
-        os.environ.get("COMPUTERNAME", ""),
+def _fingerprint_parts():
+    node = str(platform.node() or "")
+    user = str(getpass.getuser() or "")
+    processor = str(os.environ.get("PROCESSOR_IDENTIFIER", "") or "")
+    computer = str(os.environ.get("COMPUTERNAME", "") or node)
+    return node, user, processor, computer
+
+
+def _stable_fingerprint():
+    # PROCESSOR_IDENTIFIER is not present in every process (scheduled tasks,
+    # elevated vs unelevated, service-hosted launches). Signing with it made
+    # legitimate license files look tampered.
+    node, user, _processor, computer = _fingerprint_parts()
+    return "|".join((node, user, "", computer))
+
+
+def _fingerprint_variants():
+    node, user, processor, computer = _fingerprint_parts()
+    raw = [
+        (node, user, "", computer),
+        (node, user, processor, computer),
+        (node, user.lower(), "", computer),
+        (node, user.lower(), processor, computer),
+        (computer, user, "", computer),
+        (computer, user, processor, computer),
+        (node, user, processor, node),
+        (node.lower(), user.lower(), "", computer.lower()),
+        (node.lower(), user.lower(), processor, computer.lower()),
     ]
-    return "|".join(parts)
+    variants = []
+    seen = set()
+    for parts in raw:
+        fingerprint = "|".join(parts)
+        if fingerprint not in seen:
+            seen.add(fingerprint)
+            variants.append(fingerprint)
+    return variants
 
 
-def _sign_payload(payload):
-    key = hashlib.sha256(("KnightLogics.DisplayControlPlus.v2|" + _machine_fingerprint()).encode("utf-8")).digest()
+def _sign_payload(payload, prefix=None, fingerprint=None):
+    prefix = SIGN_PREFIX_V2 if prefix is None else prefix
+    fingerprint = _stable_fingerprint() if fingerprint is None else fingerprint
+    key = hashlib.sha256((prefix + fingerprint).encode("utf-8")).digest()
     normalized = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hmac.new(key, normalized, hashlib.sha256).hexdigest()
 
@@ -183,10 +221,12 @@ def _migrate_state(state):
     now = int(time.time())
     created_at = int(state.get("created_at", now) or now)
     migrated = _new_state()
+    # v1 only sold metered hours. Backdating the commercial trial to created_at
+    # expired it immediately for existing installs and blocked protection.
     migrated.update(
         {
-            "legacy_remaining_seconds": max(0, int(state.get("remaining_seconds", 0) or 0)),
-            "legacy_used_seconds": max(0, int(state.get("used_seconds", 0) or 0)),
+            "legacy_remaining_seconds": max(0, int(state.get("remaining_seconds", state.get("legacy_remaining_seconds", 0)) or 0)),
+            "legacy_used_seconds": max(0, int(state.get("used_seconds", state.get("legacy_used_seconds", 0)) or 0)),
             "lifetime": bool(state.get("lifetime", False)),
             "customer_email": str(state.get("customer_email", "")).strip(),
             "recovery_code": str(state.get("recovery_code", "")).strip(),
@@ -194,8 +234,14 @@ def _migrate_state(state):
             "restored_codes": list(state.get("restored_codes", [])),
             "created_at": created_at,
             "updated_at": int(state.get("updated_at", created_at) or created_at),
-            "trial_started_at": created_at,
-            "trial_ends_at": created_at + (TRIAL_DAYS * 86400),
+            "customer_id": str(state.get("customer_id", "")).strip(),
+            "subscription_id": str(state.get("subscription_id", "")).strip(),
+            "subscription_status": str(state.get("subscription_status", "inactive")).strip() or "inactive",
+            "subscription_current_period_end": str(state.get("subscription_current_period_end", "")).strip(),
+            "subscription_cancel_at_period_end": bool(state.get("subscription_cancel_at_period_end", False)),
+            "last_synced_at": int(state.get("last_synced_at", 0) or 0),
+            "trial_started_at": now,
+            "trial_ends_at": now + (TRIAL_DAYS * 86400),
         }
     )
     return migrated
@@ -208,8 +254,39 @@ def _verify_state(state):
     payload = {k: v for k, v in state.items() if k != "signature"}
     if not isinstance(signature, str):
         return False
-    expected = _sign_payload(payload)
-    return hmac.compare_digest(signature, expected)
+    for prefix in (SIGN_PREFIX_V2, SIGN_PREFIX_V1):
+        for fingerprint in _fingerprint_variants():
+            expected = _sign_payload(payload, prefix=prefix, fingerprint=fingerprint)
+            if hmac.compare_digest(signature, expected):
+                return True
+    return False
+
+
+def _signature_is_present(state):
+    signature = state.get("signature") if isinstance(state, dict) else None
+    return isinstance(signature, str) and len(signature) == 64 and all(ch in "0123456789abcdef" for ch in signature.lower())
+
+
+def _drop_stale_tamper_marker():
+    path = LICENSE_PATH + ".tampered"
+    if not os.path.exists(path):
+        return
+    try:
+        os.remove(path)
+        _LOG.info("Removed stale license.json.tampered left by a signature mismatch.")
+    except OSError as exc:
+        _LOG.warning("Could not remove stale license.json.tampered: %s", exc)
+
+
+def _quarantine_license(suffix):
+    dest = LICENSE_PATH + suffix
+    try:
+        if os.path.exists(dest):
+            os.remove(dest)
+        if os.path.exists(LICENSE_PATH):
+            os.replace(LICENSE_PATH, dest)
+    except OSError as exc:
+        _LOG.warning("Could not quarantine license file as %s: %s", suffix, exc)
 
 
 def _write_state(state):
@@ -217,8 +294,12 @@ def _write_state(state):
     state["updated_at"] = int(time.time())
     payload = {k: v for k, v in state.items() if k != "signature"}
     state["signature"] = _sign_payload(payload)
-    with open(LICENSE_PATH, "w", encoding="utf-8") as f:
+    tmp_path = LICENSE_PATH + ".tmp"
+    with open(tmp_path, "w", encoding="utf-8") as f:
         json.dump(state, f, indent=2)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp_path, LICENSE_PATH)
     return state
 
 
@@ -227,56 +308,79 @@ def load_or_init_state():
         if not os.path.exists(LICENSE_PATH):
             return _write_state(_new_state())
         try:
-            with open(LICENSE_PATH, "r", encoding="utf-8") as f:
+            with open(LICENSE_PATH, "r", encoding="utf-8-sig") as f:
                 state = json.load(f)
-        except Exception:
+        except (OSError, json.JSONDecodeError) as exc:
+            _LOG.warning("Could not read license file (%s). Starting a new trial.", exc)
+            _quarantine_license(".unreadable")
             return _write_state(_new_state())
 
-        if _verify_state(state):
-            migrated = _migrate_state(state)
-            if migrated != state:
-                return _write_state(migrated)
-            return state
+        if not isinstance(state, dict):
+            _LOG.warning("License file was not an object. Starting a new trial.")
+            _quarantine_license(".unreadable")
+            return _write_state(_new_state())
 
-        tampered_path = LICENSE_PATH + ".tampered"
-        try:
-            if os.path.exists(tampered_path):
-                os.remove(tampered_path)
-            os.replace(LICENSE_PATH, tampered_path)
-        except Exception:
-            pass
+        verified = _verify_state(state)
+        if not verified and not _signature_is_present(state):
+            # A missing signature is an actual local edit. v1 files and
+            # fingerprint drift still carry a 64-char HMAC and are handled below.
+            _LOG.warning("License file has no valid signature. Local entitlements were not kept.")
+            _quarantine_license(".tampered")
+            return _write_state(_new_state())
 
-        reset = _new_state()
-        reset["trial_started_at"] = int(time.time())
-        reset["trial_ends_at"] = reset["trial_started_at"]
-        return _write_state(reset)
+        if not verified:
+            _LOG.warning(
+                "License signature did not match this session. "
+                "Keeping the stored trial or license and re-signing. "
+                "This happens for v1.0 license files and when processor or logon "
+                "environment details differ between the dashboard and the background process."
+            )
+
+        migrated = _migrate_state(state)
+        if (not verified) or migrated != state:
+            written = _write_state(migrated)
+            _drop_stale_tamper_marker()
+            return written
+        _drop_stale_tamper_marker()
+        return state
 
 
 def format_seconds_display(total_seconds):
     try:
         total_seconds = max(0, int(total_seconds))
-    except Exception:
+    except (TypeError, ValueError):
         total_seconds = 0
     hours, remainder = divmod(total_seconds, 3600)
     minutes, seconds = divmod(remainder, 60)
     return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
 
 
+def _offline_grace_active(state, now=None):
+    now = int(time.time() if now is None else now)
+    status = str(state.get("subscription_status", "inactive")).strip().lower()
+    if status not in ACTIVE_SUBSCRIPTION_STATUSES:
+        return False
+    if int(state.get("last_synced_at", 0) or 0) <= 0:
+        return False
+    current_period_end = _iso_to_epoch(state.get("subscription_current_period_end", ""))
+    if not current_period_end or current_period_end >= now:
+        return False
+    return current_period_end + OFFLINE_GRACE_SECONDS >= now
+
+
 def _subscription_is_active(state, now=None):
     now = int(time.time() if now is None else now)
     status = str(state.get("subscription_status", "inactive")).strip().lower()
-    current_period_end = _iso_to_epoch(state.get("subscription_current_period_end", ""))
     if status not in ACTIVE_SUBSCRIPTION_STATUSES:
         return False
-    if current_period_end and current_period_end < now:
+    current_period_end = _iso_to_epoch(state.get("subscription_current_period_end", ""))
+    if current_period_end and current_period_end < now and not _offline_grace_active(state, now):
         return False
-    return bool(state.get("subscription_id")) or status in ACTIVE_SUBSCRIPTION_STATUSES
+    return True
 
 
 def _trial_is_active(state, now=None):
     now = int(time.time() if now is None else now)
-    if max(0, int(state.get("legacy_remaining_seconds", 0) or 0)) > 0:
-        return False
     if bool(state.get("lifetime", False)) or _subscription_is_active(state, now):
         return False
     trial_end = int(state.get("trial_ends_at", 0) or 0)
@@ -289,10 +393,10 @@ def _current_billing_kind(state, now=None):
         return "lifetime"
     if _subscription_is_active(state, now):
         return "subscription"
-    if max(0, int(state.get("legacy_remaining_seconds", 0) or 0)) > 0:
-        return "legacy_credits"
     if _trial_is_active(state, now):
         return "trial"
+    if max(0, int(state.get("legacy_remaining_seconds", 0) or 0)) > 0:
+        return "legacy_credits"
     return "none"
 
 
@@ -344,6 +448,15 @@ def get_status():
         plan_key = ""
         plan_label = ""
 
+    offline_grace = _offline_grace_active(state, now)
+    server_error = str(state.get("last_server_error", "")).strip()
+    if billing_kind == "none":
+        block_reason = "trial ended and no active license is stored on this PC"
+        if server_error:
+            block_reason = f"{block_reason} (license server: {server_error})"
+    else:
+        block_reason = ""
+
     return {
         "customer_email": str(state.get("customer_email", "")).strip(),
         "recovery_code": str(state.get("recovery_code", "")).strip(),
@@ -367,13 +480,28 @@ def get_status():
         "subscription_current_period_end_display": _format_date(state.get("subscription_current_period_end", "")),
         "subscription_cancel_at_period_end": bool(state.get("subscription_cancel_at_period_end", False)),
         "can_protect": billing_kind in {"trial", "subscription", "lifetime", "legacy_credits"},
+        "offline_grace": offline_grace,
+        "block_reason": block_reason,
+        "server_error": server_error,
+        "last_synced_at": int(state.get("last_synced_at", 0) or 0),
     }
+
+
+def note_license_server_failure(error):
+    """Remember a failed account sync without clearing a local trial or license."""
+    message = str(error or "license server unavailable").strip() or "license server unavailable"
+    with _STATE_LOCK:
+        state = load_or_init_state()
+        state["last_server_error"] = message[:300]
+        state["last_server_error_at"] = int(time.time())
+        _write_state(state)
+    return get_status()
 
 
 def consume_active_seconds(seconds):
     try:
         seconds = int(seconds)
-    except Exception:
+    except (TypeError, ValueError):
         seconds = 0
     if seconds <= 0:
         return get_status()
@@ -392,7 +520,7 @@ def consume_active_seconds(seconds):
 def add_hours(hours, email=""):
     try:
         seconds = int(float(hours) * 3600)
-    except Exception:
+    except (TypeError, ValueError):
         seconds = 0
     if seconds <= 0:
         return get_status()

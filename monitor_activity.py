@@ -48,6 +48,7 @@ class MonitorActivityDetector:
         self._last_activity_time = time.time()
         self._running = False
         self._lock = threading.Lock()
+        self._grab_failures = set()
 
     def start(self):
         self._running = True
@@ -110,7 +111,8 @@ class MonitorActivityDetector:
         the user-configured timeout. Resuming playback resets the timer immediately.
         """
         try:
-            from PIL import ImageGrab, ImageChops, ImageStat
+            from PIL import ImageChops, ImageStat
+            from screen_grab import grab_region
         except ImportError:
             logging.warning("[ACTIVITY] Pillow not available; Activity mode cannot detect screen changes.")
             return
@@ -124,7 +126,7 @@ class MonitorActivityDetector:
                 geom = tuple(m['geometry'])
                 left, top, right, bottom = m['geometry']
                 try:
-                    raw = ImageGrab.grab(bbox=(left, top, right, bottom), all_screens=True)
+                    raw = grab_region((left, top, right, bottom))
                     small = raw.resize(SAMPLE).convert("L")  # grayscale — fast comparison
                     if geom in prev:
                         diff = ImageChops.difference(small, prev[geom])
@@ -134,8 +136,13 @@ class MonitorActivityDetector:
                                 self._last_activity_time = now
                                 m['last_activity_time'] = now
                     prev[geom] = small
-                except Exception as e:
-                    logging.debug(f"[ACTIVITY] Screen capture error on {geom}: {e}")
+                    self._grab_failures.discard(geom)
+                except (OSError, ValueError) as exc:
+                    if geom not in self._grab_failures:
+                        self._grab_failures.add(geom)
+                        logging.warning("[ACTIVITY] Screen grab failed for monitor %s: %s", geom, exc)
+                    else:
+                        logging.debug("[ACTIVITY] Screen grab still failing for %s: %s", geom, exc)
             time.sleep(self._SCREEN_POLL_INTERVAL)
 
     def _run(self):

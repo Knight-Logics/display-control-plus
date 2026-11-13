@@ -1,6 +1,16 @@
 Display Control+ Changelog
 =========================
 
+v1.1.2 (2026-11-13)
+- Protection no longer stops because metered credits ran out or the license server cannot be reached. Trial, annual, and lifetime entitlements stay local, and a subscription that was synced successfully keeps working for 14 days after the stored period end while the server is unavailable
+- Existing v1.0 license files are migrated instead of being quarantined as tampered. A signature mismatch caused by the old signing key or a changing machine fingerprint no longer expires the trial or writes license.json.tampered
+- Activity detection captures monitors that sit left of or above the primary display. Those negative virtual-desktop coordinates used to fail inside Pillow with "screen grab failed"
+- Login startup is a per-user Run key, so it no longer depends on an elevated scheduled task. Access denied from schtasks is logged and does not block startup
+- Background protection logs a real entitlement reason once instead of repeating "waiting for license credits"
+- Startup, config, and lock failures in the dashboard log the underlying error instead of a bare catch-all
+- Pillow is pinned to 12.3.0 (the open security update). Video mode depends on opencv-python-headless, and the tray and checkout builds exclude OpenCV so those copies are not packed into the installer
+- Installer size is still dominated by shipping DisplayControl.exe and overlay_bg.exe as separate one-file builds that each contain OpenCV. A shared one-folder build would remove that second copy; it is not in this release because it changes the install layout
+
 v1.1.1 (2026-05-27)
 - Fixed a wake-detection bug that could immediately close newly started overlays before the short timeout behavior was visible
 - Restored reliable mixed-timeout behavior so a fast center-display profile can coexist with longer side-display profiles
