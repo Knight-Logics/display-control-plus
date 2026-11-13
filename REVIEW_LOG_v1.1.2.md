@@ -53,6 +53,14 @@ Read line by line. Outcome:
 
 Fix: pin checkout to `actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8` (`v5.0.0`). That commit's `action.yml` says `using: node24`. Confirmed with `gh api repos/actions/checkout/commits/08c6903cd8c0fde910a37f88322edcfb5dd907a8`.
 
+Follow-up run after that pin, read the same way:
+
+```bash
+gh run view 43500882334 --repo Knight-Logics/display-control-plus --log
+```
+
+Job `gitleaks`, head merge `c4e74c2c43194ff0a8dc7d1004f07a5ad029f709` (includes `a10727e`), conclusion **success**. Checkout downloaded `08c6903`. Gitleaks checksum matched. `2 commits scanned`, `~80492 bytes`, `no leaks found`. There is no `##[warning]` and no Node.js 20 line. The only hint text is git's own `init.defaultBranch` note while Actions creates an empty repository. That is not a workflow failure.
+
 There were no failing or flaky checks. The secret-scan workflow is the only check in this repository.
 
 ## Commands run on this machine
