@@ -15,8 +15,8 @@ import webbrowser
 from PIL import Image, ImageTk
 from billing_catalog import get_plan, plan_button_label
 from monitor_activity import MonitorActivityDetector
-from license_meter import get_status as get_license_status, consume_active_seconds, add_hours, activate_lifetime, activate_subscription, sync_remote_account, restore_from_recovery_code, note_license_server_failure
-from payment_service import is_payment_available, create_checkout_session, confirm_session, create_portal_session, restore_account_remote
+from license_meter import get_status as get_license_status, consume_active_seconds, add_hours, activate_lifetime, activate_subscription, sync_remote_account, restore_from_recovery_code, apply_remote_sync_result
+from payment_service import is_payment_available, create_checkout_session, confirm_session, create_portal_session, sync_account
 
 # Debug logging setup
 debug_window = None
@@ -261,7 +261,7 @@ def show_image_overlay(geometry, img_path, demo=False):
         label = tk.Label(root, image=photo, bg='black')
         label.image = photo  # Keep reference
         label.pack(fill=tk.BOTH, expand=True)
-        logging.info(f"Image displayed on overlay window.")
+        logging.info("Image displayed on overlay window.")
     except Exception as e:
         logging.error(f"Failed to display image overlay: {e}")
         label = tk.Label(root, text=f"Error displaying image:\n{e}", fg="red", bg="black", font=("Segoe UI", 20))
@@ -1009,7 +1009,6 @@ def launch_gui():
     win.minsize(980, 720)
     win.configure(bg="#0f1115")
 
-    app_dir = app_base_dir()
     logo_path = _first_existing_path("Display Control+ Logo.png")
     logo_ico_path = _first_existing_path("Display Control+ Logo.ico")
     brand_logo_path = _first_existing_path("KnightLogicsLogo.png")
@@ -1099,7 +1098,6 @@ def launch_gui():
     root_frame = ttk.Frame(win, padding=(16, 12, 16, 10))
     root_frame.pack(fill=tk.BOTH, expand=True)
 
-    license_status = get_license_status()
     license_frame = tk.Frame(root_frame, bg="#111a24", bd=1, relief=tk.SOLID, highlightthickness=0)
     license_frame.pack(fill=tk.X, pady=(0, 10))
 
@@ -1405,19 +1403,25 @@ def launch_gui():
             return False
 
         log_debug(f"Syncing account state for {email}")
-        result = restore_account_remote(email, recovery_code)
+        result = sync_account(email, recovery_code)
         if not result.get("ok", False):
             error = result.get("error", "unknown error")
             log_debug(f"Account sync failed: {error}")
             try:
-                note_license_server_failure(error)
+                apply_remote_sync_result(result, recovery_code)
             except OSError as exc:
                 logging.warning("Could not record license server failure: %s", exc)
-            if show_feedback:
+            if show_feedback and result.get("fail_open"):
+                messagebox.showwarning(
+                    "Display Control+",
+                    "The license server is temporarily unavailable. Protection already on this PC stays as it is.",
+                )
+            elif show_feedback:
                 messagebox.showerror("Display Control+", result.get("error", "Could not sync account state."))
+            refresh_license_label()
             return False
 
-        sync_remote_account(result, recovery_code)
+        apply_remote_sync_result(result, recovery_code)
         refresh_license_label()
         if show_feedback:
             messagebox.showinfo("Display Control+", "Account state refreshed from the billing server.")
@@ -1431,17 +1435,17 @@ def launch_gui():
             return
 
         def _worker():
-            result = restore_account_remote(email, recovery_code)
+            result = sync_account(email, recovery_code)
             if not result.get("ok", False):
                 error = result.get("error", "unknown error")
                 log_debug(f"Initial account sync skipped: {error}")
                 try:
-                    note_license_server_failure(error)
+                    apply_remote_sync_result(result, recovery_code)
                 except OSError as exc:
                     logging.warning("Could not record license server failure: %s", exc)
                 return
             def _apply_sync():
-                sync_remote_account(result, recovery_code)
+                apply_remote_sync_result(result, recovery_code)
                 refresh_license_label()
             win.after(0, _apply_sync)
 
@@ -1752,10 +1756,19 @@ def launch_gui():
             messagebox.showwarning("Display Control+", "Your purchase email is required to restore this account.")
             return
 
-        result = restore_account_remote(email, recovery_code)
+        result = sync_account(email, recovery_code)
+        if result.get("fail_open"):
+            apply_remote_sync_result(result, recovery_code)
+            refresh_license_label()
+            messagebox.showwarning(
+                "Display Control+",
+                "The license server is temporarily unavailable. Protection already on this PC stays as it is.",
+            )
+            return
         if result.get("ok", False):
-            sync_remote_account(result, recovery_code)
+            apply_remote_sync_result(result, recovery_code)
         else:
+            apply_remote_sync_result(result, recovery_code)
             result = restore_from_recovery_code(recovery_code, email)
         if not result.get("ok", False):
             messagebox.showerror("Display Control+", result.get("error", "Could not restore account."))

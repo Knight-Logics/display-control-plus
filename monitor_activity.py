@@ -3,7 +3,6 @@ import os
 import sys
 import time
 import threading
-from pynput import mouse, keyboard
 
 APPDATA_ROOT = os.environ.get("APPDATA", os.path.expanduser("~"))
 RUNTIME_PROFILE = os.environ.get(
@@ -58,6 +57,11 @@ class MonitorActivityDetector:
             threading.Thread(target=self._screen_poll_loop, daemon=True, name="screen-activity-poll").start()
 
     def _start_listeners(self):
+        try:
+            from pynput import keyboard, mouse
+        except ImportError as exc:
+            logging.error("pynput is required for input detection: %s", exc)
+            raise
         self._last_mouse_pos = None
 
         def on_mouse_move(x, y):
@@ -149,7 +153,6 @@ class MonitorActivityDetector:
         for m in self.monitors:
             m['last_input_time'] = time.time()
             m['last_activity_time'] = time.time()
-        last_idle_snapshot = None
         while self._running:
             now = time.time()
             with self._lock:
@@ -188,7 +191,6 @@ class MonitorActivityDetector:
                         self._idle_times[geom] = m_both_idle
                     else:
                         self._idle_times[geom] = m_input_idle
-                last_idle_snapshot = self._idle_times.copy()
             time.sleep(1)
 
     def get_idle_times(self):

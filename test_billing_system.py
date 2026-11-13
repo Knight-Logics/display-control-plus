@@ -34,7 +34,6 @@ class FakeStripe:
 
     def _create_session(self, **kwargs):
         session_id = f"cs_test_{len(self.sessions) + 1}"
-        plan_key = kwargs.get("metadata", {}).get("plan_key", "")
         customer_id = kwargs.get("customer") or f"cus_test_{len(self.sessions) + 1}"
         session = AttrDict(
             id=session_id,

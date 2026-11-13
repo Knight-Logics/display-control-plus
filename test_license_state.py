@@ -77,7 +77,7 @@ class LicenseStateTests(unittest.TestCase):
         self.assertGreater(status["trial_ends_at"], int(time.time()))
         self.assertIn("owner@example.com", status["customer_email"])
 
-    def test_fingerprint_drift_keeps_lifetime_and_does_not_quarantine(self):
+    def test_unverified_signature_does_not_keep_a_forged_lifetime(self):
         payload = self.meter._new_state()
         payload.pop("signature", None)
         payload["lifetime"] = True
@@ -91,11 +91,10 @@ class LicenseStateTests(unittest.TestCase):
 
         status = self.meter.get_status()
 
-        self.assertTrue(status["lifetime"])
+        self.assertFalse(status["lifetime"])
+        self.assertEqual(status["billing_kind"], "trial")
         self.assertTrue(status["can_protect"])
-        self.assertEqual(status["billing_kind"], "lifetime")
-        self.assertFalse(os.path.exists(self.meter.LICENSE_PATH + ".tampered"))
-        self.assertTrue(self.meter._verify_state(self.meter.load_or_init_state()))
+        self.assertTrue(os.path.exists(self.meter.LICENSE_PATH + ".tampered"))
 
     def test_missing_signature_is_still_quarantined(self):
         payload = self.meter._new_state()
@@ -144,7 +143,14 @@ class LicenseStateTests(unittest.TestCase):
         self.assertEqual(status["billing_kind"], "legacy_credits")
         self.assertTrue(status["can_protect"])
 
-    def test_offline_grace_keeps_a_synced_subscription(self):
+    def _end_trial(self):
+        state = self.meter.load_or_init_state()
+        state["trial_ends_at"] = 1
+        state["legacy_remaining_seconds"] = 0
+        state["lifetime"] = False
+        self.meter._write_state(state)
+
+    def test_recent_sync_keeps_an_ended_active_period_for_seven_days(self):
         period_end = (datetime.now(timezone.utc) - timedelta(days=3)).strftime("%Y-%m-%dT%H:%M:%SZ")
         self.meter.sync_remote_account(
             {
@@ -157,18 +163,16 @@ class LicenseStateTests(unittest.TestCase):
                 "lifetime": False,
             }
         )
-        state = self.meter.load_or_init_state()
-        state["trial_ends_at"] = 1
-        state["legacy_remaining_seconds"] = 0
-        self.meter._write_state(state)
+        self._end_trial()
 
         status = self.meter.get_status()
 
         self.assertTrue(status["offline_grace"])
         self.assertTrue(status["can_protect"])
         self.assertEqual(status["billing_kind"], "subscription")
+        self.assertEqual(self.meter.OFFLINE_GRACE_SECONDS, 7 * 24 * 60 * 60)
 
-    def test_grace_does_not_apply_after_the_window_or_when_canceled(self):
+    def test_active_subscription_lapses_seven_days_after_the_last_sync(self):
         expired = (datetime.now(timezone.utc) - timedelta(days=30)).strftime("%Y-%m-%dT%H:%M:%SZ")
         self.meter.sync_remote_account(
             {
@@ -183,20 +187,106 @@ class LicenseStateTests(unittest.TestCase):
         state = self.meter.load_or_init_state()
         state["trial_ends_at"] = 1
         state["legacy_remaining_seconds"] = 0
+        state["last_synced_at"] = int(time.time()) - (10 * 24 * 60 * 60)
         self.meter._write_state(state)
-        expired_status = self.meter.get_status()
-        self.assertFalse(expired_status["offline_grace"])
-        self.assertFalse(expired_status["can_protect"])
 
-        recent = (datetime.now(timezone.utc) - timedelta(days=2)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        status = self.meter.get_status()
+
+        self.assertFalse(status["offline_grace"])
+        self.assertFalse(status["can_protect"])
+
+    def test_canceled_subscription_stays_entitled_until_period_end_plus_seven_days(self):
+        recent = (datetime.now(timezone.utc) - timedelta(days=3)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        self.meter.sync_remote_account(
+            {
+                "email": "annual@example.com",
+                "subscription_status": "canceled",
+                "subscription_current_period_end": recent,
+                "subscription_id": "sub_cancel",
+                "lifetime": False,
+            }
+        )
+        self._end_trial()
+        status = self.meter.get_status()
+        self.assertTrue(status["offline_grace"])
+        self.assertTrue(status["can_protect"])
+
+        older = (datetime.now(timezone.utc) - timedelta(days=10)).strftime("%Y-%m-%dT%H:%M:%SZ")
         state = self.meter.load_or_init_state()
-        state["subscription_status"] = "canceled"
-        state["subscription_current_period_end"] = recent
-        state["last_synced_at"] = int(time.time())
+        state["subscription_current_period_end"] = older
         self.meter._write_state(state)
-        canceled = self.meter.get_status()
-        self.assertFalse(canceled["offline_grace"])
-        self.assertFalse(canceled["can_protect"])
+        ended = self.meter.get_status()
+        self.assertFalse(ended["offline_grace"])
+        self.assertFalse(ended["can_protect"])
+
+    def test_http_503_fail_open_keeps_a_paid_license_and_does_not_slide(self):
+        self.meter.activate_lifetime(email="owner@example.com")
+        outage = {
+            "ok": False,
+            "fail_open": True,
+            "http_status": 503,
+            "error": "License store is temporarily unavailable.",
+            "offline_grace_seconds": 7 * 24 * 60 * 60,
+        }
+        first = self.meter.apply_remote_sync_result(outage)
+        until = self.meter.load_or_init_state()["fail_open_until"]
+        second = self.meter.apply_remote_sync_result(outage)
+
+        self.assertTrue(first["lifetime"])
+        self.assertTrue(second["can_protect"])
+        self.assertEqual(self.meter.load_or_init_state()["fail_open_until"], until)
+        self.assertGreater(until, int(time.time()))
+
+    def test_http_503_fail_open_does_not_revive_an_expired_trial(self):
+        state = self.meter.load_or_init_state()
+        state["trial_ends_at"] = 1
+        state["lifetime"] = False
+        state["subscription_status"] = "inactive"
+        state["legacy_remaining_seconds"] = 0
+        self.meter._write_state(state)
+
+        status = self.meter.apply_remote_sync_result(
+            {
+                "ok": False,
+                "fail_open": True,
+                "http_status": 503,
+                "error": "License store is temporarily unavailable.",
+                "offline_grace_seconds": 7 * 24 * 60 * 60,
+            }
+        )
+
+        self.assertFalse(status["can_protect"])
+        self.assertFalse(self.meter.load_or_init_state().get("fail_open_paid"))
+
+    def test_successful_sync_clears_fail_open_and_a_revoked_lifetime(self):
+        self.meter.activate_lifetime(email="owner@example.com")
+        self.meter.apply_remote_sync_result(
+            {
+                "ok": False,
+                "fail_open": True,
+                "http_status": 503,
+                "error": "License store is temporarily unavailable.",
+                "offline_grace_seconds": 7 * 24 * 60 * 60,
+            }
+        )
+        self.assertTrue(self.meter.load_or_init_state().get("fail_open_paid"))
+        self.meter.sync_remote_account(
+            {
+                "email": "owner@example.com",
+                "lifetime": False,
+                "subscription_status": "canceled",
+                "subscription_current_period_end": "2020-01-01T00:00:00Z",
+                "subscription_id": "sub_old",
+            }
+        )
+        state = self.meter.load_or_init_state()
+        state["trial_ends_at"] = 1
+        state["legacy_remaining_seconds"] = 0
+        self.meter._write_state(state)
+        status = self.meter.get_status()
+        self.assertFalse(status["lifetime"])
+        self.assertFalse(status["can_protect"])
+        self.assertFalse(self.meter.load_or_init_state().get("fail_open_paid"))
 
     def test_unreachable_server_does_not_clear_a_local_license(self):
         self.meter.activate_lifetime(email="owner@example.com")

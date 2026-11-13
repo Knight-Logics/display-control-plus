@@ -2,6 +2,7 @@ import logging
 import os
 import subprocess
 import sys
+import threading
 
 APPDATA_ROOT = os.environ.get("APPDATA", os.path.expanduser("~"))
 RUNTIME_PROFILE = os.environ.get(
@@ -60,6 +61,63 @@ def _set_run_key_startup(start_cmd, run_value_name=None, runner=None):
     return result.returncode == 0
 
 
+_STARTUP_LOCK = threading.Lock()
+_STARTUP_FILE_LOCK = {"depth": 0, "handle": None}
+
+
+class _StartupFileLock:
+    """Keep the dashboard and the tray from deleting and recreating the task together."""
+
+    def __enter__(self):
+        if _STARTUP_FILE_LOCK["depth"] == 0:
+            os.makedirs(RUNTIME_DIR, exist_ok=True)
+            handle = open(os.path.join(RUNTIME_DIR, "startup.lock"), "a+")
+            try:
+                if os.name == "nt":
+                    import msvcrt
+
+                    if handle.seek(0, os.SEEK_END) == 0:
+                        handle.write("0")
+                        handle.flush()
+                    handle.seek(0)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+                else:
+                    import fcntl
+
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            except OSError as exc:
+                logging.warning("Could not lock startup registration: %s", exc)
+            _STARTUP_FILE_LOCK["handle"] = handle
+        _STARTUP_FILE_LOCK["depth"] += 1
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        _STARTUP_FILE_LOCK["depth"] -= 1
+        if _STARTUP_FILE_LOCK["depth"] > 0:
+            return False
+        _STARTUP_FILE_LOCK["depth"] = 0
+        handle = _STARTUP_FILE_LOCK.get("handle")
+        _STARTUP_FILE_LOCK["handle"] = None
+        if handle is not None:
+            try:
+                if os.name == "nt":
+                    import msvcrt
+
+                    handle.seek(0)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    import fcntl
+
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            except OSError as exc:
+                logging.warning("Could not unlock startup registration: %s", exc)
+            try:
+                handle.close()
+            except OSError:
+                pass
+        return False
+
+
 def register_per_user_startup(start_cmd, task_name=None, run_value_name=None, runner=None):
     """Register login startup for the current user without elevation.
 
@@ -68,6 +126,11 @@ def register_per_user_startup(start_cmd, task_name=None, run_value_name=None, ru
     schtasks (common when an elevated installer owns the task) does not fail
     startup when the Run key was written.
     """
+    with _STARTUP_LOCK, _StartupFileLock():
+        return _register_per_user_startup(start_cmd, task_name, run_value_name, runner)
+
+
+def _register_per_user_startup(start_cmd, task_name=None, run_value_name=None, runner=None):
     run = runner or subprocess.run
     flags = _no_window_flags()
     resolved_task = task_name or TASK_NAME

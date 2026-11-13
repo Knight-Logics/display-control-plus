@@ -2,7 +2,7 @@ Display Control+ Changelog
 =========================
 
 v1.1.2 (2026-11-13)
-- Protection no longer stops because metered credits ran out or the license server cannot be reached. Trial, annual, and lifetime entitlements stay local, and a subscription that was synced successfully keeps working for 14 days after the stored period end while the server is unavailable
+- Protection no longer stops because metered credits ran out or the license server cannot be reached. Trial, annual, and lifetime entitlements stay local. A paid subscription keeps working for 7 days when the license server returns HTTP 503 with fail_open, matching the knight-account API. A first trial is not extended by that outage. Account sync calls /api/licenses/restore and /api/knight-account, and the default server is https://knightlogics.com
 - Existing v1.0 license files are migrated instead of being quarantined as tampered. A signature mismatch caused by the old signing key or a changing machine fingerprint no longer expires the trial or writes license.json.tampered
 - Activity detection captures monitors that sit left of or above the primary display. Those negative virtual-desktop coordinates used to fail inside Pillow with "screen grab failed"
 - Login startup is a per-user Run key, so it no longer depends on an elevated scheduled task. Access denied from schtasks is logged and does not block startup
