@@ -59,10 +59,13 @@ Invoke-BuildStep {
     & $projectPython -m PyInstaller --noconfirm --clean --onefile --windowed --name "DisplayControl" $iconArg --distpath "$ProjectRoot\dist" "$ProjectRoot\main.py"
 } "DisplayControl build failed."
 
-# Step 2: Build tray executable
+# Step 2: Build tray executable.
+# Tray does not capture video or host checkout, so keep OpenCV/NumPy/webview out of this copy.
 Write-Host "[2/6] Building tray.exe..."
 Invoke-BuildStep {
-    & $projectPython -m PyInstaller --noconfirm --clean --onefile --windowed --name "tray" $iconArg --distpath "$ProjectRoot\dist" "$ProjectRoot\tray.py"
+    & $projectPython -m PyInstaller --noconfirm --clean --onefile --windowed --name "tray" $iconArg --distpath "$ProjectRoot\dist" `
+        --exclude-module cv2 --exclude-module numpy --exclude-module flask --exclude-module stripe --exclude-module webview `
+        "$ProjectRoot\tray.py"
 } "tray build failed."
 
 # Step 3: Build background executable
@@ -71,10 +74,13 @@ Invoke-BuildStep {
     & $projectPython -m PyInstaller --noconfirm --clean --onefile --windowed --name "overlay_bg" $iconArg --distpath "$ProjectRoot\dist" "$ProjectRoot\overlay_bg.py"
 } "overlay_bg build failed."
 
-# Step 4: Build checkout helper executable
+# Step 4: Build checkout helper executable.
+# Checkout only needs pywebview. OpenCV is the largest duplicated payload in the installer.
 Write-Host "[4/6] Building checkout_window.exe..."
 Invoke-BuildStep {
-    & $projectPython -m PyInstaller --noconfirm --clean --onefile --windowed --name "checkout_window" $iconArg --distpath "$ProjectRoot\dist" "$ProjectRoot\checkout_window.py"
+    & $projectPython -m PyInstaller --noconfirm --clean --onefile --windowed --name "checkout_window" $iconArg --distpath "$ProjectRoot\dist" `
+        --exclude-module cv2 --exclude-module numpy --exclude-module flask --exclude-module stripe `
+        "$ProjectRoot\checkout_window.py"
 } "checkout_window build failed."
 Pop-Location
 
@@ -115,4 +121,4 @@ Invoke-BuildStep {
 } "Inno Setup build failed."
 
 # Output result
-Write-Host "Build complete! Installer is in $ProjectRoot\DisplayControlSetup_v1.1.1.exe"
+Write-Host "Build complete! Installer is in $ProjectRoot\DisplayControlSetup_v1.1.2.exe"

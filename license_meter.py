@@ -3,6 +3,7 @@ import getpass
 import hashlib
 import hmac
 import json
+import logging
 import os
 import platform
 import re
@@ -26,22 +27,118 @@ os.makedirs(RUNTIME_DIR, exist_ok=True)
 LICENSE_PATH = os.path.join(RUNTIME_DIR, "license.json")
 RECOVERY_SIGNING_SECRET_BAKED = "DisplayControlPlus-Recovery-LocalFallback-CHANGE-ME"
 ACTIVE_SUBSCRIPTION_STATUSES = {"active", "trialing", "past_due"}
+# canceled / unpaid / incomplete stay entitled until period_end plus this window.
+# Matches knight-account-api DEFAULT_OFFLINE_GRACE_SECONDS (7 days).
+GRACE_SUBSCRIPTION_STATUSES = {"canceled", "unpaid", "incomplete"}
+OFFLINE_GRACE_SECONDS = 7 * 24 * 60 * 60
+SIGN_PREFIX_V2 = "KnightLogics.DisplayControlPlus.v2|"
+SIGN_PREFIX_V1 = "KnightLogics.DisplayControlPlus.v1|"
 
 _STATE_LOCK = threading.RLock()
+_LOG = logging.getLogger("license_meter")
+_FILE_LOCK_STATE = {"depth": 0, "handle": None}
 
 
-def _machine_fingerprint():
-    parts = [
-        platform.node(),
-        getpass.getuser(),
-        os.environ.get("PROCESSOR_IDENTIFIER", ""),
-        os.environ.get("COMPUTERNAME", ""),
+class _LicenseFileLock:
+    """Cross-process lock so the dashboard and the background overlay cannot
+    read-modify-write license.json at the same time. Reentrant in one process.
+    """
+
+    def __enter__(self):
+        if _FILE_LOCK_STATE["depth"] == 0:
+            lock_path = LICENSE_PATH + ".lock"
+            os.makedirs(os.path.dirname(lock_path), exist_ok=True)
+            handle = open(lock_path, "a+")
+            try:
+                if os.name == "nt":
+                    import msvcrt
+
+                    handle.seek(0)
+                    if handle.tell() == 0 and handle.read(1) == "":
+                        handle.write("0")
+                        handle.flush()
+                    handle.seek(0)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+                else:
+                    import fcntl
+
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            except OSError as exc:
+                _LOG.warning("Could not lock %s: %s", lock_path, exc)
+            _FILE_LOCK_STATE["handle"] = handle
+        _FILE_LOCK_STATE["depth"] += 1
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        _FILE_LOCK_STATE["depth"] -= 1
+        if _FILE_LOCK_STATE["depth"] > 0:
+            return False
+        _FILE_LOCK_STATE["depth"] = 0
+        handle = _FILE_LOCK_STATE.get("handle")
+        _FILE_LOCK_STATE["handle"] = None
+        if handle is not None:
+            try:
+                if os.name == "nt":
+                    import msvcrt
+
+                    handle.seek(0)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    import fcntl
+
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            except OSError as exc:
+                _LOG.warning("Could not unlock license file: %s", exc)
+            try:
+                handle.close()
+            except OSError:
+                pass
+        return False
+
+
+def _fingerprint_parts():
+    node = str(platform.node() or "")
+    user = str(getpass.getuser() or "")
+    processor = str(os.environ.get("PROCESSOR_IDENTIFIER", "") or "")
+    computer = str(os.environ.get("COMPUTERNAME", "") or node)
+    return node, user, processor, computer
+
+
+def _stable_fingerprint():
+    # PROCESSOR_IDENTIFIER is not present in every process (scheduled tasks,
+    # elevated vs unelevated, service-hosted launches). Signing with it made
+    # legitimate license files look tampered.
+    node, user, _processor, computer = _fingerprint_parts()
+    return "|".join((node, user, "", computer))
+
+
+def _fingerprint_variants():
+    node, user, processor, computer = _fingerprint_parts()
+    raw = [
+        (node, user, "", computer),
+        (node, user, processor, computer),
+        (node, user.lower(), "", computer),
+        (node, user.lower(), processor, computer),
+        (computer, user, "", computer),
+        (computer, user, processor, computer),
+        (node, user, processor, node),
+        (node.lower(), user.lower(), "", computer.lower()),
+        (node.lower(), user.lower(), processor, computer.lower()),
     ]
-    return "|".join(parts)
+    variants = []
+    seen = set()
+    for parts in raw:
+        fingerprint = "|".join(parts)
+        if fingerprint not in seen:
+            seen.add(fingerprint)
+            variants.append(fingerprint)
+    return variants
 
 
-def _sign_payload(payload):
-    key = hashlib.sha256(("KnightLogics.DisplayControlPlus.v2|" + _machine_fingerprint()).encode("utf-8")).digest()
+def _sign_payload(payload, prefix=None, fingerprint=None):
+    prefix = SIGN_PREFIX_V2 if prefix is None else prefix
+    fingerprint = _stable_fingerprint() if fingerprint is None else fingerprint
+    key = hashlib.sha256((prefix + fingerprint).encode("utf-8")).digest()
     normalized = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hmac.new(key, normalized, hashlib.sha256).hexdigest()
 
@@ -183,10 +280,12 @@ def _migrate_state(state):
     now = int(time.time())
     created_at = int(state.get("created_at", now) or now)
     migrated = _new_state()
+    # v1 only sold metered hours. Backdating the commercial trial to created_at
+    # expired it immediately for existing installs and blocked protection.
     migrated.update(
         {
-            "legacy_remaining_seconds": max(0, int(state.get("remaining_seconds", 0) or 0)),
-            "legacy_used_seconds": max(0, int(state.get("used_seconds", 0) or 0)),
+            "legacy_remaining_seconds": max(0, int(state.get("remaining_seconds", state.get("legacy_remaining_seconds", 0)) or 0)),
+            "legacy_used_seconds": max(0, int(state.get("used_seconds", state.get("legacy_used_seconds", 0)) or 0)),
             "lifetime": bool(state.get("lifetime", False)),
             "customer_email": str(state.get("customer_email", "")).strip(),
             "recovery_code": str(state.get("recovery_code", "")).strip(),
@@ -194,8 +293,14 @@ def _migrate_state(state):
             "restored_codes": list(state.get("restored_codes", [])),
             "created_at": created_at,
             "updated_at": int(state.get("updated_at", created_at) or created_at),
-            "trial_started_at": created_at,
-            "trial_ends_at": created_at + (TRIAL_DAYS * 86400),
+            "customer_id": str(state.get("customer_id", "")).strip(),
+            "subscription_id": str(state.get("subscription_id", "")).strip(),
+            "subscription_status": str(state.get("subscription_status", "inactive")).strip() or "inactive",
+            "subscription_current_period_end": str(state.get("subscription_current_period_end", "")).strip(),
+            "subscription_cancel_at_period_end": bool(state.get("subscription_cancel_at_period_end", False)),
+            "last_synced_at": int(state.get("last_synced_at", 0) or 0),
+            "trial_started_at": now,
+            "trial_ends_at": now + (TRIAL_DAYS * 86400),
         }
     )
     return migrated
@@ -208,8 +313,34 @@ def _verify_state(state):
     payload = {k: v for k, v in state.items() if k != "signature"}
     if not isinstance(signature, str):
         return False
-    expected = _sign_payload(payload)
-    return hmac.compare_digest(signature, expected)
+    for prefix in (SIGN_PREFIX_V2, SIGN_PREFIX_V1):
+        for fingerprint in _fingerprint_variants():
+            expected = _sign_payload(payload, prefix=prefix, fingerprint=fingerprint)
+            if hmac.compare_digest(signature, expected):
+                return True
+    return False
+
+
+def _drop_stale_tamper_marker():
+    path = LICENSE_PATH + ".tampered"
+    if not os.path.exists(path):
+        return
+    try:
+        os.remove(path)
+        _LOG.info("Removed stale license.json.tampered left by a signature mismatch.")
+    except OSError as exc:
+        _LOG.warning("Could not remove stale license.json.tampered: %s", exc)
+
+
+def _quarantine_license(suffix):
+    dest = LICENSE_PATH + suffix
+    try:
+        if os.path.exists(dest):
+            os.remove(dest)
+        if os.path.exists(LICENSE_PATH):
+            os.replace(LICENSE_PATH, dest)
+    except OSError as exc:
+        _LOG.warning("Could not quarantine license file as %s: %s", suffix, exc)
 
 
 def _write_state(state):
@@ -217,66 +348,119 @@ def _write_state(state):
     state["updated_at"] = int(time.time())
     payload = {k: v for k, v in state.items() if k != "signature"}
     state["signature"] = _sign_payload(payload)
-    with open(LICENSE_PATH, "w", encoding="utf-8") as f:
+    tmp_path = LICENSE_PATH + ".tmp"
+    with open(tmp_path, "w", encoding="utf-8") as f:
         json.dump(state, f, indent=2)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp_path, LICENSE_PATH)
     return state
 
 
 def load_or_init_state():
-    with _STATE_LOCK:
+    with _STATE_LOCK, _LicenseFileLock():
         if not os.path.exists(LICENSE_PATH):
             return _write_state(_new_state())
         try:
-            with open(LICENSE_PATH, "r", encoding="utf-8") as f:
+            with open(LICENSE_PATH, "r", encoding="utf-8-sig") as f:
                 state = json.load(f)
-        except Exception:
+        except (OSError, json.JSONDecodeError) as exc:
+            _LOG.warning("Could not read license file (%s). Starting a new trial.", exc)
+            _quarantine_license(".unreadable")
             return _write_state(_new_state())
 
-        if _verify_state(state):
-            migrated = _migrate_state(state)
-            if migrated != state:
-                return _write_state(migrated)
-            return state
+        if not isinstance(state, dict):
+            _LOG.warning("License file was not an object. Starting a new trial.")
+            _quarantine_license(".unreadable")
+            return _write_state(_new_state())
 
-        tampered_path = LICENSE_PATH + ".tampered"
-        try:
-            if os.path.exists(tampered_path):
-                os.remove(tampered_path)
-            os.replace(LICENSE_PATH, tampered_path)
-        except Exception:
-            pass
+        verified = _verify_state(state)
+        if not verified:
+            # v1 files verify with SIGN_PREFIX_V1. A 64-character hex string that
+            # does not match any fingerprint is not trusted: accepting it let a
+            # local edit keep lifetime=true.
+            _LOG.warning(
+                "License signature did not match this session. Local entitlements were not kept."
+            )
+            _quarantine_license(".tampered")
+            return _write_state(_new_state())
 
-        reset = _new_state()
-        reset["trial_started_at"] = int(time.time())
-        reset["trial_ends_at"] = reset["trial_started_at"]
-        return _write_state(reset)
+        migrated = _migrate_state(state)
+        if (not verified) or migrated != state:
+            written = _write_state(migrated)
+            _drop_stale_tamper_marker()
+            return written
+        _drop_stale_tamper_marker()
+        return state
 
 
 def format_seconds_display(total_seconds):
     try:
         total_seconds = max(0, int(total_seconds))
-    except Exception:
+    except (TypeError, ValueError):
         total_seconds = 0
     hours, remainder = divmod(total_seconds, 3600)
     minutes, seconds = divmod(remainder, 60)
     return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
 
 
+def _subscription_status(state):
+    return str(state.get("subscription_status", "inactive")).strip().lower()
+
+
+def _period_end_epoch(state):
+    return _iso_to_epoch(state.get("subscription_current_period_end", ""))
+
+
+def _paid_entitlement_active(state, now):
+    """Match knight-account decideSubscription, plus a 7-day offline bound.
+
+    active / trialing / past_due stay entitled while the period is current, or
+    for 7 days after the last successful sync once the period has ended.
+    canceled / unpaid / incomplete stay entitled until period_end plus 7 days.
+    """
+    status = _subscription_status(state)
+    period_end = _period_end_epoch(state)
+    last_sync = int(state.get("last_synced_at", 0) or 0)
+    if status in ACTIVE_SUBSCRIPTION_STATUSES:
+        if not period_end or period_end >= now:
+            return True
+        return bool(last_sync) and now <= last_sync + OFFLINE_GRACE_SECONDS
+    if status in GRACE_SUBSCRIPTION_STATUSES and period_end and now <= period_end + OFFLINE_GRACE_SECONDS:
+        return True
+    return False
+
+
+def _fail_open_active(state, now):
+    if not bool(state.get("fail_open_paid")):
+        return False
+    return int(state.get("fail_open_until", 0) or 0) >= now
+
+
+def _offline_grace_active(state, now=None):
+    now = int(time.time() if now is None else now)
+    if bool(state.get("lifetime", False)):
+        return False
+    status = _subscription_status(state)
+    period_end = _period_end_epoch(state)
+    if status in GRACE_SUBSCRIPTION_STATUSES and period_end and period_end < now and now <= period_end + OFFLINE_GRACE_SECONDS:
+        return True
+    if status in ACTIVE_SUBSCRIPTION_STATUSES and period_end and period_end < now and _paid_entitlement_active(state, now):
+        return True
+    return _fail_open_active(state, now) and not _paid_entitlement_active(state, now)
+
+
 def _subscription_is_active(state, now=None):
     now = int(time.time() if now is None else now)
-    status = str(state.get("subscription_status", "inactive")).strip().lower()
-    current_period_end = _iso_to_epoch(state.get("subscription_current_period_end", ""))
-    if status not in ACTIVE_SUBSCRIPTION_STATUSES:
+    if bool(state.get("lifetime", False)):
         return False
-    if current_period_end and current_period_end < now:
-        return False
-    return bool(state.get("subscription_id")) or status in ACTIVE_SUBSCRIPTION_STATUSES
+    if _paid_entitlement_active(state, now):
+        return True
+    return _fail_open_active(state, now)
 
 
 def _trial_is_active(state, now=None):
     now = int(time.time() if now is None else now)
-    if max(0, int(state.get("legacy_remaining_seconds", 0) or 0)) > 0:
-        return False
     if bool(state.get("lifetime", False)) or _subscription_is_active(state, now):
         return False
     trial_end = int(state.get("trial_ends_at", 0) or 0)
@@ -289,10 +473,10 @@ def _current_billing_kind(state, now=None):
         return "lifetime"
     if _subscription_is_active(state, now):
         return "subscription"
-    if max(0, int(state.get("legacy_remaining_seconds", 0) or 0)) > 0:
-        return "legacy_credits"
     if _trial_is_active(state, now):
         return "trial"
+    if max(0, int(state.get("legacy_remaining_seconds", 0) or 0)) > 0:
+        return "legacy_credits"
     return "none"
 
 
@@ -344,6 +528,15 @@ def get_status():
         plan_key = ""
         plan_label = ""
 
+    offline_grace = _offline_grace_active(state, now)
+    server_error = str(state.get("last_server_error", "")).strip()
+    if billing_kind == "none":
+        block_reason = "trial ended and no active license is stored on this PC"
+        if server_error:
+            block_reason = f"{block_reason} (license server: {server_error})"
+    else:
+        block_reason = ""
+
     return {
         "customer_email": str(state.get("customer_email", "")).strip(),
         "recovery_code": str(state.get("recovery_code", "")).strip(),
@@ -367,18 +560,72 @@ def get_status():
         "subscription_current_period_end_display": _format_date(state.get("subscription_current_period_end", "")),
         "subscription_cancel_at_period_end": bool(state.get("subscription_cancel_at_period_end", False)),
         "can_protect": billing_kind in {"trial", "subscription", "lifetime", "legacy_credits"},
+        "offline_grace": offline_grace,
+        "block_reason": block_reason,
+        "server_error": server_error,
+        "last_synced_at": int(state.get("last_synced_at", 0) or 0),
     }
+
+
+def note_license_server_failure(error, fail_open=False, grace_seconds=None, http_status=0):
+    """Remember a failed account sync without clearing a local trial or license.
+
+    fail_open is only honored for an HTTP 503 that says the license store is
+    down, and only when this PC already has a paid entitlement. A 503 does not
+    start or extend a trial.
+    """
+    message = str(error or "license server unavailable").strip() or "license server unavailable"
+    with _STATE_LOCK, _LicenseFileLock():
+        state = load_or_init_state()
+        now = int(time.time())
+        state["last_server_error"] = message[:300]
+        state["last_server_error_at"] = now
+        if http_status:
+            state["last_server_http_status"] = int(http_status)
+        already_paid = bool(state.get("lifetime", False)) or _paid_entitlement_active(state, now)
+        if fail_open and already_paid and not int(state.get("fail_open_until", 0) or 0):
+            try:
+                window = int(grace_seconds or 0)
+            except (TypeError, ValueError):
+                window = 0
+            if window <= 0:
+                window = OFFLINE_GRACE_SECONDS
+            anchor = int(state.get("last_synced_at", 0) or 0) or now
+            state["fail_open_until"] = anchor + window
+            state["fail_open_paid"] = True
+        _write_state(state)
+    return get_status()
+
+
+def apply_remote_sync_result(result, recovery_code=""):
+    """Apply a /api/licenses or /api/knight-account payload, or record a failure."""
+    if not isinstance(result, dict):
+        return note_license_server_failure("License server returned an unreadable response.")
+    if result.get("fail_open"):
+        return note_license_server_failure(
+            result.get("error"),
+            fail_open=True,
+            grace_seconds=result.get("offline_grace_seconds"),
+            http_status=result.get("http_status") or 503,
+        )
+    if not result.get("ok"):
+        return note_license_server_failure(
+            result.get("error"),
+            fail_open=False,
+            http_status=result.get("http_status") or 0,
+        )
+    return sync_remote_account(result, recovery_code)
 
 
 def consume_active_seconds(seconds):
     try:
         seconds = int(seconds)
-    except Exception:
+    except (TypeError, ValueError):
         seconds = 0
     if seconds <= 0:
         return get_status()
 
-    with _STATE_LOCK:
+    with _STATE_LOCK, _LicenseFileLock():
         state = load_or_init_state()
         if _current_billing_kind(state) == "legacy_credits":
             remaining = max(0, int(state.get("legacy_remaining_seconds", 0) or 0) - seconds)
@@ -392,12 +639,12 @@ def consume_active_seconds(seconds):
 def add_hours(hours, email=""):
     try:
         seconds = int(float(hours) * 3600)
-    except Exception:
+    except (TypeError, ValueError):
         seconds = 0
     if seconds <= 0:
         return get_status()
 
-    with _STATE_LOCK:
+    with _STATE_LOCK, _LicenseFileLock():
         state = load_or_init_state()
         if not state.get("lifetime", False):
             state["legacy_remaining_seconds"] = max(0, int(state.get("legacy_remaining_seconds", 0) or 0)) + seconds
@@ -407,7 +654,7 @@ def add_hours(hours, email=""):
 
 
 def activate_lifetime(email="", recovery_code=""):
-    with _STATE_LOCK:
+    with _STATE_LOCK, _LicenseFileLock():
         state = load_or_init_state()
         state["lifetime"] = True
         _record_purchase(state, "lifetime", email, plan_key="lifetime", recovery_code=recovery_code)
@@ -425,7 +672,7 @@ def activate_subscription(
     customer_id="",
     cancel_at_period_end=False,
 ):
-    with _STATE_LOCK:
+    with _STATE_LOCK, _LicenseFileLock():
         state = load_or_init_state()
         if email:
             state["customer_email"] = str(email).strip().lower()
@@ -443,7 +690,7 @@ def sync_remote_account(account_payload, recovery_code=""):
     if not isinstance(account_payload, dict):
         return get_status()
 
-    with _STATE_LOCK:
+    with _STATE_LOCK, _LicenseFileLock():
         state = load_or_init_state()
         email = str(account_payload.get("email", state.get("customer_email", ""))).strip().lower()
         if email:
@@ -456,8 +703,19 @@ def sync_remote_account(account_payload, recovery_code=""):
         state["subscription_status"] = str(account_payload.get("subscription_status", state.get("subscription_status", "inactive"))).strip() or "inactive"
         state["subscription_current_period_end"] = str(account_payload.get("subscription_current_period_end", state.get("subscription_current_period_end", ""))).strip()
         state["subscription_cancel_at_period_end"] = bool(account_payload.get("subscription_cancel_at_period_end", state.get("subscription_cancel_at_period_end", False)))
-        if bool(account_payload.get("lifetime", False)):
-            state["lifetime"] = True
+        if "lifetime" in account_payload:
+            state["lifetime"] = bool(account_payload.get("lifetime"))
+        token = str(account_payload.get("entitlement_token") or "").strip()
+        if token:
+            state["entitlement_token"] = token
+        if account_payload.get("grace_until"):
+            try:
+                state["grace_until"] = int(account_payload.get("grace_until") or 0)
+            except (TypeError, ValueError):
+                pass
+        state["last_server_error"] = ""
+        state["fail_open_until"] = 0
+        state["fail_open_paid"] = False
         state["last_synced_at"] = int(time.time())
         _write_state(state)
     return get_status()
@@ -471,7 +729,7 @@ def restore_from_recovery_code(recovery_code, email=""):
     if not email:
         return {"ok": False, "error": "Purchase email is required to restore this code."}
 
-    with _STATE_LOCK:
+    with _STATE_LOCK, _LicenseFileLock():
         state = load_or_init_state()
         purchase_history = list(state.get("purchase_history", []))
         restored_codes = {

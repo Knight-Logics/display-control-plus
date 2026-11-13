@@ -15,8 +15,8 @@ import webbrowser
 from PIL import Image, ImageTk
 from billing_catalog import get_plan, plan_button_label
 from monitor_activity import MonitorActivityDetector
-from license_meter import get_status as get_license_status, consume_active_seconds, add_hours, activate_lifetime, activate_subscription, sync_remote_account, restore_from_recovery_code
-from payment_service import is_payment_available, create_checkout_session, confirm_session, create_portal_session, restore_account_remote
+from license_meter import get_status as get_license_status, consume_active_seconds, add_hours, activate_lifetime, activate_subscription, sync_remote_account, restore_from_recovery_code, apply_remote_sync_result
+from payment_service import is_payment_available, create_checkout_session, confirm_session, create_portal_session, sync_account
 
 # Debug logging setup
 debug_window = None
@@ -92,7 +92,10 @@ def _config_file_signature():
     try:
         stat = os.stat(path)
         return (stat.st_mtime_ns, stat.st_size)
-    except Exception:
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        logging.warning("Could not stat config file: %s", exc)
         return None
 
 
@@ -102,8 +105,10 @@ def _read_usage_state():
             data = json.load(fh)
         if isinstance(data, dict):
             return data
-    except Exception:
+    except FileNotFoundError:
         pass
+    except (OSError, json.JSONDecodeError) as exc:
+        logging.warning("Could not read overlay usage state: %s", exc)
     return {
         "active": False,
         "active_session_seconds": 0,
@@ -120,8 +125,8 @@ def _write_usage_state(**updates):
     try:
         with open(USAGE_STATE_PATH, "w", encoding="utf-8") as fh:
             json.dump(state, fh, indent=2)
-    except Exception as e:
-        logging.debug(f"Could not write overlay usage state: {e}")
+    except OSError as exc:
+        logging.warning("Could not write overlay usage state: %s", exc)
 
 
 def app_base_dir():
@@ -167,7 +172,8 @@ def _load_lock_payload(lock_path):
         return int(raw), ""
     try:
         payload = json.loads(raw)
-    except Exception:
+    except json.JSONDecodeError as exc:
+        logging.warning("Could not parse lock file %s: %s", lock_path, exc)
         return None, ""
     pid = payload.get("pid")
     if isinstance(pid, str) and pid.isdigit():
@@ -179,31 +185,18 @@ def _load_lock_payload(lock_path):
 
 
 def _start_startup_registration():
-    try:
-        check = subprocess.run(
-            ["SchTasks", "/Query", "/TN", TASK_NAME],
-            capture_output=True,
-            text=True,
-            check=False,
-            creationflags=subprocess.CREATE_NO_WINDOW,
-        )
-        access_denied = "Access is denied" in ((check.stderr or "") + (check.stdout or ""))
-        if access_denied:
-            return
-        if getattr(sys, "frozen", False):
+    def _run():
+        try:
             from ensure_overlay_bg_task import ensure_overlay_bg_task
 
-            threading.Thread(
-                target=ensure_overlay_bg_task,
-                daemon=True,
-                name="display-control-startup-registration",
-            ).start()
-            return
-        script_path = os.path.join(app_base_dir(), "ensure_overlay_bg_task.py")
-        if os.path.exists(script_path):
-            subprocess.Popen([sys.executable, script_path], cwd=app_base_dir(), creationflags=subprocess.CREATE_NO_WINDOW)
-    except Exception as e:
-        logging.error(f"Failed to ensure background task from overlay.py: {e}")
+            result = ensure_overlay_bg_task()
+            if not result or not result.get("ok"):
+                detail = (result or {}).get("task_error") or "no startup target"
+                logging.error("Per-user startup registration failed: %s", detail)
+        except (OSError, subprocess.SubprocessError) as exc:
+            logging.error("Failed to register per-user startup: %s", exc)
+
+    threading.Thread(target=_run, daemon=True, name="display-control-startup-registration").start()
 
 # --- Logging Setup ---
 logging.basicConfig(filename=runtime_path("overlay.log"), level=logging.DEBUG, format="%(asctime)s %(levelname)s %(message)s")
@@ -268,7 +261,7 @@ def show_image_overlay(geometry, img_path, demo=False):
         label = tk.Label(root, image=photo, bg='black')
         label.image = photo  # Keep reference
         label.pack(fill=tk.BOTH, expand=True)
-        logging.info(f"Image displayed on overlay window.")
+        logging.info("Image displayed on overlay window.")
     except Exception as e:
         logging.error(f"Failed to display image overlay: {e}")
         label = tk.Label(root, text=f"Error displaying image:\n{e}", fg="red", bg="black", font=("Segoe UI", 20))
@@ -614,10 +607,14 @@ def save_config(monitors, selected, mode, file_paths, timeout, interval, enabled
     logging.info(f"Config saved: {config}")
 
 def load_config():
+    path = runtime_path("config.json")
     try:
-        with open(runtime_path("config.json"), "r", encoding="utf-8") as f:
+        with open(path, "r", encoding="utf-8") as f:
             return json.load(f)
-    except Exception:
+    except FileNotFoundError:
+        return None
+    except (OSError, json.JSONDecodeError) as exc:
+        logging.warning("Could not read config %s: %s", path, exc)
         return None
 
 
@@ -650,11 +647,12 @@ def is_background_running():
         else:
             os.remove(lock_path)
             return False
-    except Exception:
+    except (OSError, ValueError, AttributeError) as exc:
+        logging.warning("Background lock check failed: %s", exc)
         try:
             os.remove(lock_path)
-        except Exception:
-            pass
+        except OSError as remove_exc:
+            logging.debug("Could not remove background lock: %s", remove_exc)
         return False
 
 def set_background_lock(state):
@@ -665,8 +663,8 @@ def set_background_lock(state):
     else:
         try:
             os.remove(lock_path)
-        except Exception:
-            pass
+        except OSError as exc:
+            logging.debug("Could not remove background lock: %s", exc)
 
 def _is_pid_alive(pid):
     try:
@@ -676,7 +674,8 @@ def _is_pid_alive(pid):
             ctypes.windll.kernel32.CloseHandle(handle)
             return True
         return False
-    except Exception:
+    except (OSError, AttributeError) as exc:
+        logging.debug("Could not query pid %s: %s", pid, exc)
         return False
 
 def _get_process_image_name(pid):
@@ -686,7 +685,7 @@ def _get_process_image_name(pid):
             capture_output=True,
             text=True,
             check=False,
-            creationflags=subprocess.CREATE_NO_WINDOW,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
         line = (result.stdout or "").strip()
         if not line or line.startswith("INFO:"):
@@ -694,7 +693,8 @@ def _get_process_image_name(pid):
         if line.startswith('"'):
             return line.split('","', 1)[0].strip('"').lower()
         return line.split(",", 1)[0].strip().lower()
-    except Exception:
+    except (OSError, subprocess.SubprocessError) as exc:
+        logging.debug("Could not resolve process name for pid %s: %s", pid, exc)
         return ""
 
 def is_gui_running():
@@ -714,11 +714,12 @@ def is_gui_running():
             return True
         os.remove(lock_path)
         return False
-    except Exception:
+    except (OSError, ValueError, AttributeError) as exc:
+        logging.warning("Dashboard lock check failed: %s", exc)
         try:
             os.remove(lock_path)
-        except Exception:
-            pass
+        except OSError as remove_exc:
+            logging.debug("Could not remove dashboard lock: %s", remove_exc)
         return False
 
 def set_gui_lock(state):
@@ -733,29 +734,37 @@ def set_gui_lock(state):
     else:
         try:
             os.remove(lock_path)
-        except Exception:
-            pass
+        except OSError as exc:
+            logging.debug("Could not remove dashboard lock: %s", exc)
 
-# --- Task Scheduler Integration ---
+# --- Startup registration ---
 def register_task_scheduler():
-    exe = sys.executable
-    script = os.path.abspath(__file__)
-    task_name = "Display Control+"
-    cmd = f'SchTasks /Create /F /TN "{task_name}" /TR "{exe} {script} --background" /SC ONLOGON /RL HIGHEST'
-    try:
-        subprocess.run(cmd, shell=True, check=True, creationflags=subprocess.CREATE_NO_WINDOW)
-        run_cmd = f'SchTasks /Run /TN "{task_name}"'
-        subprocess.run(run_cmd, shell=True, check=True, creationflags=subprocess.CREATE_NO_WINDOW)
-    except Exception as e:
-        logging.error(f"Task Scheduler registration or start failed: {e}")
+    """Kept for older callers. Startup itself is per-user and does not need elevation."""
+    _start_startup_registration()
 
 def unregister_task_scheduler():
-    task_name = "Display Control+"
-    cmd = f'SchTasks /Delete /F /TN "{task_name}"'
+    from ensure_overlay_bg_task import RUN_VALUE_NAME
+
     try:
-        subprocess.run(cmd, shell=True, check=True, creationflags=subprocess.CREATE_NO_WINDOW)
-    except Exception as e:
-        logging.error(f"Task Scheduler unregister failed: {e}")
+        subprocess.run(
+            ["reg", "delete", r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run", "/v", RUN_VALUE_NAME, "/f"],
+            capture_output=True,
+            text=True,
+            check=False,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        result = subprocess.run(
+            ["schtasks", "/Delete", "/F", "/TN", TASK_NAME],
+            capture_output=True,
+            text=True,
+            check=False,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout or "").strip()
+            logging.info("Scheduled task delete skipped: %s", detail or result.returncode)
+    except (OSError, subprocess.SubprocessError) as exc:
+        logging.error("Startup unregister failed: %s", exc)
 
 # --- Background Overlay Logic ---
 def run_background_overlay():
@@ -768,21 +777,29 @@ def run_background_overlay():
         last_config_dump = ""
         last_config_sig = None
         session_overlay_seconds = 0
+        last_block_reason = None
         while True:
             license_status = get_license_status()
             if not license_status.get("can_protect", False):
-                set_config_paused(True, "license_exhausted")
                 _write_usage_state(
                     active=False,
                     active_session_seconds=session_overlay_seconds,
                     remaining_seconds=license_status.get("remaining_seconds", 0),
                     lifetime=bool(license_status.get("lifetime", False)),
                 )
-                logging.warning("Protection time is exhausted. Background overlay is waiting for license credits.")
-                time.sleep(15)
+                reason = str(license_status.get("block_reason") or "no active trial or license")
+                if reason != last_block_reason:
+                    logging.warning("Protection is idle: %s", reason)
+                    last_block_reason = reason
+                time.sleep(60)
                 continue
+            last_block_reason = None
 
             config = load_config() or {}
+            if config.get("pause_reason") == "license_exhausted":
+                logging.info("Clearing stale license_exhausted pause from the retired credit gate.")
+                set_config_paused(False, "")
+                config["paused"] = False
             if config.get("paused", False):
                 logging.info("Protection paused. Sleeping 5s.")
                 time.sleep(5)
@@ -900,8 +917,10 @@ def run_background_overlay():
                             lifetime=bool(status_after.get("lifetime", False)),
                         )
                         if not status_after.get("can_protect", False):
-                            set_config_paused(True, "license_exhausted")
-                            logging.warning("Protection time reached zero while overlay was active.")
+                            logging.warning(
+                                "Protection entitlement ended while an overlay was active: %s",
+                                status_after.get("block_reason") or "no active trial or license",
+                            )
                             break
                     else:
                         current_status = get_license_status()
@@ -968,7 +987,8 @@ def launch_gui():
 
     try:
         from updater import CURRENT_VERSION as APP_VERSION
-    except Exception:
+    except (ImportError, AttributeError) as exc:
+        logging.warning("Could not read app version: %s", exc)
         APP_VERSION = "unknown"
 
     from monitor_control import get_monitors
@@ -976,8 +996,8 @@ def launch_gui():
     # Set an explicit AppUserModelID so Windows groups the app consistently on the taskbar.
     try:
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("KnightLogics.DisplayControlPlus")
-    except Exception:
-        pass
+    except (AttributeError, OSError) as exc:
+        logging.debug("Could not set AppUserModelID: %s", exc)
 
     win = tk.Tk()
     win.title("Display Control+")
@@ -989,7 +1009,6 @@ def launch_gui():
     win.minsize(980, 720)
     win.configure(bg="#0f1115")
 
-    app_dir = app_base_dir()
     logo_path = _first_existing_path("Display Control+ Logo.png")
     logo_ico_path = _first_existing_path("Display Control+ Logo.ico")
     brand_logo_path = _first_existing_path("KnightLogicsLogo.png")
@@ -1079,7 +1098,6 @@ def launch_gui():
     root_frame = ttk.Frame(win, padding=(16, 12, 16, 10))
     root_frame.pack(fill=tk.BOTH, expand=True)
 
-    license_status = get_license_status()
     license_frame = tk.Frame(root_frame, bg="#111a24", bd=1, relief=tk.SOLID, highlightthickness=0)
     license_frame.pack(fill=tk.X, pady=(0, 10))
 
@@ -1221,7 +1239,7 @@ def launch_gui():
         def _fmt_hms(total_seconds):
             try:
                 total_seconds = max(0, int(total_seconds))
-            except Exception:
+            except (TypeError, ValueError):
                 total_seconds = 0
             h, rem = divmod(total_seconds, 3600)
             m, s = divmod(rem, 60)
@@ -1364,8 +1382,8 @@ def launch_gui():
                 if result_path and os.path.exists(result_path):
                     try:
                         os.remove(result_path)
-                    except Exception:
-                        pass
+                    except OSError as remove_exc:
+                        logging.debug("Could not remove checkout result file: %s", remove_exc)
 
         t = threading.Thread(target=_run, daemon=True)
         t.start()
@@ -1385,14 +1403,25 @@ def launch_gui():
             return False
 
         log_debug(f"Syncing account state for {email}")
-        result = restore_account_remote(email, recovery_code)
+        result = sync_account(email, recovery_code)
         if not result.get("ok", False):
-            log_debug(f"Account sync failed: {result.get('error', 'unknown error')}")
-            if show_feedback:
+            error = result.get("error", "unknown error")
+            log_debug(f"Account sync failed: {error}")
+            try:
+                apply_remote_sync_result(result, recovery_code)
+            except OSError as exc:
+                logging.warning("Could not record license server failure: %s", exc)
+            if show_feedback and result.get("fail_open"):
+                messagebox.showwarning(
+                    "Display Control+",
+                    "The license server is temporarily unavailable. Protection already on this PC stays as it is.",
+                )
+            elif show_feedback:
                 messagebox.showerror("Display Control+", result.get("error", "Could not sync account state."))
+            refresh_license_label()
             return False
 
-        sync_remote_account(result, recovery_code)
+        apply_remote_sync_result(result, recovery_code)
         refresh_license_label()
         if show_feedback:
             messagebox.showinfo("Display Control+", "Account state refreshed from the billing server.")
@@ -1406,12 +1435,17 @@ def launch_gui():
             return
 
         def _worker():
-            result = restore_account_remote(email, recovery_code)
+            result = sync_account(email, recovery_code)
             if not result.get("ok", False):
-                log_debug(f"Initial account sync skipped: {result.get('error', 'unknown error')}")
+                error = result.get("error", "unknown error")
+                log_debug(f"Initial account sync skipped: {error}")
+                try:
+                    apply_remote_sync_result(result, recovery_code)
+                except OSError as exc:
+                    logging.warning("Could not record license server failure: %s", exc)
                 return
             def _apply_sync():
-                sync_remote_account(result, recovery_code)
+                apply_remote_sync_result(result, recovery_code)
                 refresh_license_label()
             win.after(0, _apply_sync)
 
@@ -1722,10 +1756,19 @@ def launch_gui():
             messagebox.showwarning("Display Control+", "Your purchase email is required to restore this account.")
             return
 
-        result = restore_account_remote(email, recovery_code)
+        result = sync_account(email, recovery_code)
+        if result.get("fail_open"):
+            apply_remote_sync_result(result, recovery_code)
+            refresh_license_label()
+            messagebox.showwarning(
+                "Display Control+",
+                "The license server is temporarily unavailable. Protection already on this PC stays as it is.",
+            )
+            return
         if result.get("ok", False):
-            sync_remote_account(result, recovery_code)
+            apply_remote_sync_result(result, recovery_code)
         else:
+            apply_remote_sync_result(result, recovery_code)
             result = restore_from_recovery_code(recovery_code, email)
         if not result.get("ok", False):
             messagebox.showerror("Display Control+", result.get("error", "Could not restore account."))
@@ -2166,7 +2209,7 @@ def launch_gui():
         def format_timeout(minutes):
             try:
                 value = float(minutes)
-            except Exception:
+            except (TypeError, ValueError):
                 return str(minutes)
             if value < 1:
                 return f"{int(round(value * 60))}s"
@@ -2326,7 +2369,7 @@ def launch_gui():
         if not current_license.get("can_protect", False):
             messagebox.showwarning(
                 "Display Control+",
-                "You have no protection time remaining. Please purchase credits or lifetime to enable protection."
+                current_license.get("block_reason") or "A trial, annual subscription, or lifetime license is required before protection can run."
             )
             refresh_license_label()
             return False
@@ -2406,26 +2449,24 @@ def launch_gui():
             tr_cmd = f'"{pythonw_path}" "{bg_py_path}"'
             spawn_cmd = [pythonw_path, bg_py_path]
 
-        create_cmd = (
-            f'SchTasks /Create /F /TN "{TASK_NAME}" '
-            f'/TR {tr_cmd} '
-            '/SC ONLOGON'
-        )
-        result = subprocess.run(create_cmd, shell=True, capture_output=True, text=True, creationflags=subprocess.CREATE_NO_WINDOW)
-        if result.returncode != 0:
-            msg = (result.stderr or "").strip()
-            if "Access is denied" in msg:
-                logging.warning(f"[TASK] Could not register startup task without admin rights: {msg}")
-            else:
-                logging.error(f"[TASK] Failed to register startup task: {msg}")
+        try:
+            from ensure_overlay_bg_task import register_per_user_startup
+
+            startup = register_per_user_startup(tr_cmd)
+            if not startup.get("ok"):
+                logging.error("[TASK] Per-user startup failed: %s", startup.get("task_error") or "Run key was not written")
+            elif not startup.get("scheduled_task"):
+                logging.info("[TASK] Scheduled task was not created (%s). Per-user Run startup is enabled.", startup.get("task_error") or "access denied")
+        except (OSError, subprocess.SubprocessError) as exc:
+            logging.error("[TASK] Per-user startup failed: %s", exc)
 
         # Also spawn background process immediately (don't wait for task scheduler)
         if not is_background_running():
             try:
                 subprocess.Popen(spawn_cmd, start_new_session=True, creationflags=subprocess.CREATE_NO_WINDOW)
                 logging.info("Background process spawned immediately.")
-            except Exception as e:
-                logging.warning(f"Could not spawn background process immediately: {e}")
+            except (OSError, subprocess.SubprocessError) as exc:
+                logging.warning("Could not spawn background process immediately: %s", exc)
 
 
         if show_success:
@@ -2435,7 +2476,7 @@ def launch_gui():
     def preview_overlay():
         current_license = get_license_status()
         if not current_license.get("can_protect", False):
-            messagebox.showwarning("Display Control+", "Protection preview is unavailable until time is added or a lifetime license is active.")
+            messagebox.showwarning("Display Control+", current_license.get("block_reason") or "Protection preview is unavailable until a trial or license is active.")
             refresh_license_label()
             return
 

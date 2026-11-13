@@ -3,12 +3,12 @@
 
 [Setup]
 AppName=Display Control
-AppVersion=1.1.1
+AppVersion=1.1.2
 DefaultDirName={commonpf64}\Display Control
 DefaultGroupName=Display Control
 UninstallDisplayIcon={app}\DisplayControl.exe
 OutputDir=..
-OutputBaseFilename=DisplayControlSetup_v1.1.1
+OutputBaseFilename=DisplayControlSetup_v1.1.2
 SetupIconFile=..\Display Control+ Logo.ico
 Compression=lzma
 SolidCompression=yes
@@ -37,13 +37,12 @@ Type: files; Name: "{group}\Display Control+.lnk"
 [Tasks]
 Name: "trayicon"; Description: "Start in &Task Tray on login"; GroupDescription: "Startup options:"; Flags: checkedonce
 
-[Run]
-; Register Task Scheduler entry for tray startup (preferred startup model)
-Filename: "cmd.exe"; \
-  Parameters: "/C schtasks /Create /F /TN DisplayControlBackground /TR ""\""{app}\tray.exe\"""" /SC ONLOGON"; \
-  StatusMsg: "Registering startup task..."; \
-  Flags: runhidden; Check: WizardIsTaskSelected('trayicon')
+[Registry]
+; HKCU Run works for the installing user even when setup is elevated, and it does not require admin at login.
+Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "DisplayControlPlusTray"; ValueData: """{app}\tray.exe"""; Flags: uninsdeletevalue; Tasks: trayicon
+Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "DisplayControlPlusTray"; ValueData: """{app}\tray.exe"""; Flags: uninsdeletevalue; Check: WizardSilent
 
+[Run]
 ; Start tray immediately after install (manual/wizard installs)
 Filename: "{app}\tray.exe"; Description: "Start Display Control+ tray"; Flags: nowait postinstall skipifsilent
 
@@ -53,10 +52,7 @@ Filename: "{app}\DisplayControl.exe"; Description: "Open Display Control+ dashbo
 ; Refresh Windows icon cache so updated shortcut/icon branding is reflected quickly.
 Filename: "{sys}\ie4uinit.exe"; Parameters: "-show"; Flags: runhidden
 
-; Silent update: re-register startup task, relaunch tray, then reopen dashboard
-Filename: "cmd.exe"; \
-  Parameters: "/C schtasks /Create /F /TN DisplayControlBackground /TR ""\""{app}\tray.exe\"""" /SC ONLOGON"; \
-  Flags: runhidden; Check: WizardSilent()
+; Silent update: relaunch tray, then reopen dashboard. Login startup is the HKCU Run value above.
 Filename: "{app}\tray.exe"; Flags: nowait; Check: WizardSilent()
 Filename: "{app}\DisplayControl.exe"; Flags: nowait; Check: WizardSilent()
 

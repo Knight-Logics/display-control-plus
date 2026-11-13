@@ -3,7 +3,6 @@ import os
 import sys
 import time
 import threading
-from pynput import mouse, keyboard
 
 APPDATA_ROOT = os.environ.get("APPDATA", os.path.expanduser("~"))
 RUNTIME_PROFILE = os.environ.get(
@@ -48,6 +47,7 @@ class MonitorActivityDetector:
         self._last_activity_time = time.time()
         self._running = False
         self._lock = threading.Lock()
+        self._grab_failures = set()
 
     def start(self):
         self._running = True
@@ -57,6 +57,11 @@ class MonitorActivityDetector:
             threading.Thread(target=self._screen_poll_loop, daemon=True, name="screen-activity-poll").start()
 
     def _start_listeners(self):
+        try:
+            from pynput import keyboard, mouse
+        except ImportError as exc:
+            logging.error("pynput is required for input detection: %s", exc)
+            raise
         self._last_mouse_pos = None
 
         def on_mouse_move(x, y):
@@ -110,7 +115,8 @@ class MonitorActivityDetector:
         the user-configured timeout. Resuming playback resets the timer immediately.
         """
         try:
-            from PIL import ImageGrab, ImageChops, ImageStat
+            from PIL import ImageChops, ImageStat
+            from screen_grab import grab_region
         except ImportError:
             logging.warning("[ACTIVITY] Pillow not available; Activity mode cannot detect screen changes.")
             return
@@ -124,7 +130,7 @@ class MonitorActivityDetector:
                 geom = tuple(m['geometry'])
                 left, top, right, bottom = m['geometry']
                 try:
-                    raw = ImageGrab.grab(bbox=(left, top, right, bottom), all_screens=True)
+                    raw = grab_region((left, top, right, bottom))
                     small = raw.resize(SAMPLE).convert("L")  # grayscale — fast comparison
                     if geom in prev:
                         diff = ImageChops.difference(small, prev[geom])
@@ -134,15 +140,19 @@ class MonitorActivityDetector:
                                 self._last_activity_time = now
                                 m['last_activity_time'] = now
                     prev[geom] = small
-                except Exception as e:
-                    logging.debug(f"[ACTIVITY] Screen capture error on {geom}: {e}")
+                    self._grab_failures.discard(geom)
+                except (OSError, ValueError) as exc:
+                    if geom not in self._grab_failures:
+                        self._grab_failures.add(geom)
+                        logging.warning("[ACTIVITY] Screen grab failed for monitor %s: %s", geom, exc)
+                    else:
+                        logging.debug("[ACTIVITY] Screen grab still failing for %s: %s", geom, exc)
             time.sleep(self._SCREEN_POLL_INTERVAL)
 
     def _run(self):
         for m in self.monitors:
             m['last_input_time'] = time.time()
             m['last_activity_time'] = time.time()
-        last_idle_snapshot = None
         while self._running:
             now = time.time()
             with self._lock:
@@ -181,7 +191,6 @@ class MonitorActivityDetector:
                         self._idle_times[geom] = m_both_idle
                     else:
                         self._idle_times[geom] = m_input_idle
-                last_idle_snapshot = self._idle_times.copy()
             time.sleep(1)
 
     def get_idle_times(self):
